@@ -29,7 +29,9 @@ export interface FiltersState {
   realEventStatus?: 'all' | 'true' | 'fictional';
   hasFullHints?: boolean;
   readyStatus?: 'all' | 'ready' | 'not_ready';
+  imageStatus?: 'all' | 'with_image' | 'missing_image';
   usedStatus?: 'all' | 'used' | 'unused';
+  zeroCostOnly?: boolean;
 }
 
 interface FiltersPanelProps {
@@ -143,6 +145,36 @@ const FiltersPanel: React.FC<FiltersPanelProps> = ({
                     <Label htmlFor="ready-false">Not Ready</Label>
                   </div>
                 </RadioGroup>
+              </div>
+
+              <div className="mb-4">
+                <Label className="mb-2 block text-sm font-medium">Image Status</Label>
+                <RadioGroup
+                  value={state.imageStatus ?? 'all'}
+                  onValueChange={(val) => update({ imageStatus: val as 'all' | 'with_image' | 'missing_image' })}
+                  className="flex space-x-4"
+                >
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="all" id="image-status-all" />
+                    <Label htmlFor="image-status-all">All</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="with_image" id="image-status-with" />
+                    <Label htmlFor="image-status-with">With Image</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="missing_image" id="image-status-missing" />
+                    <Label htmlFor="image-status-missing">Missing Image</Label>
+                  </div>
+                </RadioGroup>
+              </div>
+
+              <div className="flex items-center justify-between mb-4">
+                <Label className="text-sm">Zero Cost Only</Label>
+                <Switch
+                  checked={!!state.zeroCostOnly}
+                  onCheckedChange={(checked) => update({ zeroCostOnly: !!checked })}
+                />
               </div>
 
               {/* Used Status Filter (for prompts) */}

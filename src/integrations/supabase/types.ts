@@ -317,6 +317,7 @@ export type Database = {
           height: number | null
           id: string
           image_url: string | null
+          manually_used: boolean
           key_elements: string | null
           last_verified: string | null
           latitude: number | null
@@ -398,6 +399,7 @@ export type Database = {
           optimized_image_url?: string | null
           original_size_kb?: number | null
           output_format?: string | null
+          manually_used?: boolean
           positive_prompt?: string | null
           prompt: string
           prompt_id?: string | null
@@ -548,6 +550,7 @@ export type Database = {
           gps_coordinates: string | null
           has_full_hints: boolean | null
           id: string
+          manually_used: boolean
           key_elements: string | null
           last_verified: string | null
           latitude: number | null
@@ -588,6 +591,7 @@ export type Database = {
           gps_coordinates?: string | null
           has_full_hints?: boolean | null
           id?: string
+          manually_used?: boolean
           key_elements?: string | null
           last_verified?: string | null
           latitude?: number | null

@@ -1,7 +1,8 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { downloadCsv } from "@/lib/csv";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import FiltersPanel, { FiltersState } from "@/components/filters/FiltersPanel";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import FiltersPanel from "@/components/filters/FiltersPanel";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -9,7 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { CalendarDays, MapPin, Eye, Zap, Loader2, FileImage, Maximize2 } from "lucide-react";
+import { CalendarDays, MapPin, Eye, Zap, Loader2, FileImage, Maximize2, LayoutGrid, List, Search } from "lucide-react";
+import { useSharedPromptGalleryState } from "@/hooks/useSharedPromptGalleryState";
 
 interface Image {
   id: string;
@@ -149,16 +151,17 @@ const ImageSizeDisplay = ({ image }: { image: Image }) => {
 
 const Gallery = () => {
   const pageSizeOptions = [10, 25, 50, 100, 150, 200];
-  const [filters, setFilters] = useState<FiltersState>({});
+  const { searchTerm, setSearchTerm, filters, setFilters } = useSharedPromptGalleryState();
   const activeFilters = useMemo(() => filters, [filters]);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [downloadingCsv, setDownloadingCsv] = useState(false);
   const queryClient = useQueryClient();
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(25);
   const [fullscreenImage, setFullscreenImage] = useState<Image | null>(null);
-  const [searchTerm, setSearchTerm] = useState("");
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
-  const applyFilters = useCallback((query: any) => {
+  const applyFilters = useCallback((query: any, term?: string) => {
     let filteredQuery = query;
     if (activeFilters.theme) {
       filteredQuery = filteredQuery.eq('theme', activeFilters.theme);
@@ -195,35 +198,98 @@ const Gallery = () => {
     if (activeFilters.hasFullHints) {
       filteredQuery = filteredQuery.eq('has_full_hints', true);
     }
-    if (activeFilters.readyStatus === 'ready') {
-      filteredQuery = filteredQuery.eq('ready', true);
-    } else if (activeFilters.readyStatus === 'not_ready') {
-      filteredQuery = filteredQuery.eq('ready', false);
+    if (activeFilters.zeroCostOnly) {
+      filteredQuery = filteredQuery.eq('cost', 0);
+    }
+    if (activeFilters.imageStatus === 'with_image') {
+      filteredQuery = filteredQuery.not('optimized_image_url', 'is', null).neq('optimized_image_url', '');
+    } else if (activeFilters.imageStatus === 'missing_image') {
+      filteredQuery = filteredQuery.or('optimized_image_url.is.null,optimized_image_url.eq.');
+    }
+    if (term) {
+      filteredQuery = filteredQuery.ilike('title', `%${term}%`);
     }
     return filteredQuery;
   }, [activeFilters]);
 
+  const { data: yearBoundsData } = useQuery({
+    queryKey: ['images-year-bounds'],
+    queryFn: async () => {
+      const minQuery = supabase
+        .from('images')
+        .select('year')
+        .not('year', 'is', null)
+        .order('year', { ascending: true })
+        .limit(1);
+
+      const maxQuery = supabase
+        .from('images')
+        .select('year')
+        .not('year', 'is', null)
+        .order('year', { ascending: false })
+        .limit(1);
+
+      const [{ data: minData, error: minError }, { data: maxData, error: maxError }] = await Promise.all([minQuery, maxQuery]);
+
+      if (minError) throw minError;
+      if (maxError) throw maxError;
+
+      const minYear = minData?.[0]?.year ?? null;
+      const maxYear = maxData?.[0]?.year ?? null;
+
+      if (minYear === null || maxYear === null) return null;
+
+      return { minYear, maxYear };
+    },
+    staleTime: 30000,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!yearBoundsData) return;
+    setFilters((prev) => {
+      const minYear = yearBoundsData.minYear;
+      const maxYear = yearBoundsData.maxYear;
+      const bounds: [number, number] =
+        minYear <= maxYear ? [minYear, maxYear] : [maxYear, minYear];
+
+      if (!prev.yearRange) {
+        return { ...prev, yearRange: bounds };
+      }
+
+      const [prevMin, prevMax] = prev.yearRange;
+      const clampedMin = Math.max(bounds[0], Math.min(bounds[1], prevMin));
+      const clampedMax = Math.max(bounds[0], Math.min(bounds[1], prevMax));
+      const sorted: [number, number] =
+        clampedMin <= clampedMax ? [clampedMin, clampedMax] : [clampedMax, clampedMin];
+      if (sorted[0] === prevMin && sorted[1] === prevMax) return prev;
+      return { ...prev, yearRange: sorted };
+    });
+  }, [yearBoundsData, setFilters]);
+
   // Query for total count of images matching filters
   const { data: totalCountData } = useQuery({
-    queryKey: ['images-count', activeFilters],
+    queryKey: ['images-count', activeFilters, searchTerm],
     queryFn: async () => {
       let query = supabase
         .from('images')
-        .select('*', { count: 'exact', head: true });
-      query = applyFilters(query);
+        .select('id', { count: 'exact', head: true });
+      query = applyFilters(query, searchTerm);
       const { count, error } = await query;
       if (error) throw error;
       return count ?? 0;
     },
     staleTime: 30000,
     retry: false,
+    placeholderData: keepPreviousData,
   });
 
   const { data: totalsData, isLoading: totalsLoading, error: totalsError } = useQuery({
-    queryKey: ['images-totals', activeFilters],
+    queryKey: ['images-totals', activeFilters, searchTerm],
     queryFn: async () => {
       const { data, error } = await applyFilters(
-        supabase.from('images').select('cost, model')
+        supabase.from('images').select('cost, model'),
+        searchTerm
       );
 
       if (error) throw error;
@@ -244,10 +310,11 @@ const Gallery = () => {
     },
     staleTime: 30000,
     retry: false,
+    placeholderData: keepPreviousData,
   });
 
   const { data: images, isLoading, error } = useQuery({
-    queryKey: ['images', page, pageSize, activeFilters],
+    queryKey: ['images', page, pageSize, activeFilters, searchTerm],
     queryFn: async () => {
       console.log('Fetching images from database with filters...');
       try {
@@ -296,7 +363,7 @@ const Gallery = () => {
 
         const buildQuery = (columns: string, withOrder: boolean) => {
           let q = supabase.from('images').select(columns);
-          q = applyFilters(q);
+          q = applyFilters(q, searchTerm);
           if (withOrder) {
             q = q.order('created_at', { ascending: false });
           }
@@ -330,56 +397,142 @@ const Gallery = () => {
     },
     staleTime: 30000, // 30 seconds
     retry: false, // Don't retry on failure
+    placeholderData: keepPreviousData,
   });
 
     // No longer filter out by ready status
   // Filtering now handled in Supabase query
   const countsEnabled = typeof totalCountData === 'number';
-  const sortedImages = useMemo(() => {
+  const displayImages = useMemo(() => {
     if (!images) return [];
     return sortByCreatedAtDesc(images);
   }, [images]);
 
-  const filteredImages = useMemo(() => {
-    const source = sortedImages;
-    if (source.length === 0) return [];
-    const term = searchTerm.trim().toLowerCase();
-    if (!term) return source;
-    return source.filter((image) => {
-      const fields = [
-        image.title,
-        image.description,
-        image.prompt,
-        image.country,
-        image.model,
-      ];
-      return fields.some((field) =>
-        typeof field === 'string' && field.toLowerCase().includes(term)
-      );
+  const canDownloadImages = displayImages.length > 0;
+  const hasSelection = selectedIds.size > 0;
+
+  const selectAllFiltered = useCallback(() => {
+    if (!canDownloadImages) return;
+    setSelectedIds(new Set(displayImages.map((image) => image.id)));
+  }, [canDownloadImages, displayImages]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+  }, []);
+
+  const toggleSelect = useCallback((id: string, selected: boolean) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (selected) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
     });
-  }, [sortedImages, searchTerm]);
+  }, []);
+
+  const totalPages = useMemo(() => {
+    if (!totalCountData || !pageSize) return null;
+    return Math.max(1, Math.ceil(totalCountData / pageSize));
+  }, [totalCountData, pageSize]);
+
+  const handleDownloadImagesCsv = async () => {
+    if (!canDownloadImages || downloadingCsv) return;
+
+    const source = hasSelection
+      ? displayImages.filter((image) => selectedIds.has(image.id))
+      : displayImages;
+
+    if (source.length === 0) return;
+
+    const headerOrder = [
+      'id',
+      'title',
+      'description',
+      'prompt',
+      'country',
+      'year',
+      'model',
+      'created_at',
+      'width',
+      'height',
+      'cost',
+      'cfg_scale',
+      'steps',
+      'theme',
+      'approx_people_count',
+      'confidence',
+      'celebrity',
+      'real_event',
+      'has_full_hints',
+      'ready',
+      'aspect_ratio',
+      'desktop_size_kb',
+      'original_size_kb',
+      'output_format',
+    ];
+
+    const rows = source.map((image) => ({
+      id: image.id,
+      title: image.title ?? '',
+      description: image.description ?? '',
+      prompt: image.prompt,
+      country: image.country ?? '',
+      year: image.year ?? '',
+      model: image.model ?? '',
+      created_at: image.created_at,
+      width: image.width ?? '',
+      height: image.height ?? '',
+      cost: image.cost ?? '',
+      cfg_scale: image.cfg_scale ?? '',
+      steps: image.steps ?? '',
+      theme: image.theme ?? '',
+      approx_people_count: image.approx_people_count ?? '',
+      confidence: image.confidence ?? '',
+      celebrity: image.celebrity ?? '',
+      real_event: image.real_event ?? '',
+      has_full_hints: image.has_full_hints ?? '',
+      ready: image.ready ?? '',
+      aspect_ratio: image.aspect_ratio ?? '',
+      desktop_size_kb: image.desktop_size_kb ?? '',
+      original_size_kb: image.original_size_kb ?? '',
+      output_format: image.output_format ?? '',
+    }));
+
+    try {
+      setDownloadingCsv(true);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      downloadCsv(`images-${timestamp}.csv`, rows, headerOrder);
+    } catch (err) {
+      console.error('Failed to download images CSV:', err);
+    } finally {
+      setDownloadingCsv(false);
+    }
+  };
 
   // Bulk actions for selected images
   const handleDeleteSelected = async () => {
-    if (selectedIds.length === 0) return;
-    if (!window.confirm(`Delete ${selectedIds.length} selected images?`)) return;
+    if (!hasSelection) return;
+    if (!window.confirm(`Delete ${selectedIds.size} selected image(s)?`)) return;
+    const ids = Array.from(selectedIds);
     const { error } = await supabase
       .from('images')
       .delete()
-      .in('id', selectedIds);
+      .in('id', ids);
 
     if (error) {
       console.error('Delete error:', error);
       return;
     }
 
-    setSelectedIds([]);
+    setSelectedIds(new Set());
     queryClient.invalidateQueries({ queryKey: ['images'] });
   };
 
   const handleToggleReady = async () => {
-    if (selectedIds.length === 0) return;
-    const selectedImages = images?.filter(img => selectedIds.includes(img.id)) || [];
+    if (!hasSelection) return;
+    const selectedImages = images?.filter(img => selectedIds.has(img.id)) || [];
     const updatePromises = selectedImages.map(img =>
       supabase.from('images').update({ ready: !img.ready }).eq('id', img.id)
     );
@@ -412,7 +565,6 @@ const Gallery = () => {
   return (
     <div className="min-h-screen bg-background">
       <div className="container mx-auto p-6">
-        {/* Total count display */}
         <div className="mb-4 space-y-2">
           <div className="flex flex-wrap items-start gap-6">
             <div>
@@ -437,305 +589,323 @@ const Gallery = () => {
             <div className="text-xs text-destructive">Failed to load totals.</div>
           )}
         </div>
-        {/* Filters Panel */}
-        <FiltersPanel
-          state={filters}
-          onChange={setFilters}
-          onClear={() => setFilters({})}
-          themeOptions={[...(images?.map(i=>i.theme).filter(Boolean) as string[]).filter((v,i,a)=>a.indexOf(v)===i)]}
-          locationOptions={[...(images?.map(i=>i.country).filter(Boolean) as string[]).filter((v,i,a)=>a.indexOf(v)===i)]}
-        />
-        <div className="mb-8 flex items-center justify-between flex-wrap gap-4">
-          {/* Pagination controls */}
-          <div className="flex items-center gap-4">
-            <Button variant="outline" size="sm" disabled={page===0} onClick={()=>setPage(p=>Math.max(0,p-1))}>Prev</Button>
-            <span className="text-sm">Page {page+1}</span>
-            <Button variant="outline" size="sm" disabled={images && images.length < pageSize} onClick={()=>setPage(p=>p+1)}>Next</Button>
-            <Select value={pageSize.toString()} onValueChange={v=>{setPageSize(parseInt(v)); setPage(0);}}>
-              <SelectTrigger className="w-20">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {pageSizeOptions.map(opt=><SelectItem key={opt} value={opt.toString()}>{opt}/page</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex flex-col items-start sm:items-end gap-2">
-            <div>
-              <h1 className="text-3xl font-bold text-foreground mb-2">Image Gallery</h1>
-              <p className="text-muted-foreground">
-                {filteredImages.length} generated images • Click to view details
-              </p>
-            </div>
-            <Input
-              value={searchTerm}
-              onChange={(event) => {
-                setSearchTerm(event.target.value);
-                setPage(0);
-              }}
-              placeholder="Search images"
-              className="w-full sm:w-64"
-            />
-          </div>
 
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold text-foreground mb-2">Image Gallery</h1>
+          <p className="text-muted-foreground">
+            {totalCountData ?? '...'} images available • Select an image to view details
+          </p>
         </div>
 
-        {/* Selection Toolbar */}
-        {filteredImages.length > 0 && (
-          <div className="flex items-center gap-4 mb-4">
-            <Checkbox
-              checked={selectedIds.length === filteredImages.length && filteredImages.length > 0}
-              onCheckedChange={(checked) => {
-                if (checked) {
-                  setSelectedIds(filteredImages.map((img) => img.id));
-                } else {
-                  setSelectedIds([]);
-                }
-              }}
-            />
-            <span className="text-sm">Select All</span>
-            {selectedIds.length > 0 && (
-              <>
-                <Button variant="destructive" size="sm" onClick={handleDeleteSelected}>
-                  Delete Selected ({selectedIds.length})
+        <div className="flex flex-col md:flex-row gap-8">
+          <div className="w-full md:w-[350px] flex-shrink-0">
+            <div className="space-y-6 sticky top-6">
+              <FiltersPanel
+                state={filters}
+                onChange={setFilters}
+                onClear={() => setFilters({})}
+                themeOptions={[...(images?.map(i => i.theme).filter(Boolean) as string[]).filter((v, i, a) => a.indexOf(v) === i)]}
+                locationOptions={[...(images?.map(i => i.country).filter(Boolean) as string[]).filter((v, i, a) => a.indexOf(v) === i)]}
+                yearBounds={yearBoundsData}
+              />
+            </div>
+          </div>
+
+          <div className="flex-1">
+            <div className="flex flex-col sm:flex-row justify-between items-center mb-6 gap-4">
+              <div className="flex items-center gap-4 mb-2 sm:mb-0">
+                <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(p => Math.max(0, p - 1))}>Prev</Button>
+                <span className="text-sm">Page {page + 1} of {totalPages ?? '...'}</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={totalPages ?? 1}
+                  value={page + 1}
+                  onChange={e => {
+                    const val = Number(e.target.value);
+                    if (!isNaN(val) && val >= 1 && totalPages && val <= totalPages) {
+                      setPage(val - 1);
+                    }
+                  }}
+                  className="w-16 px-2 py-1 border rounded text-sm ml-2"
+                  style={{ width: '60px' }}
+                />
+                <Button variant="outline" size="sm" disabled={images && images.length < pageSize} onClick={() => setPage(p => p + 1)}>Next</Button>
+                <Select value={pageSize.toString()} onValueChange={v => { setPageSize(parseInt(v)); setPage(0); }}>
+                  <SelectTrigger className="w-20">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {pageSizeOptions.map(opt => <SelectItem key={opt} value={opt.toString()}>{opt}/page</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="relative w-full sm:max-w-xs">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
+                <Input
+                  placeholder="Search prompts..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10"
+                />
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant={viewMode === 'grid' ? 'default' : 'outline'}
+                    size="icon"
+                    onClick={() => setViewMode('grid')}
+                    aria-label="Grid view"
+                  >
+                    <LayoutGrid className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant={viewMode === 'list' ? 'default' : 'outline'}
+                    size="icon"
+                    onClick={() => setViewMode('list')}
+                    aria-label="List view"
+                  >
+                    <List className="h-4 w-4" />
+                  </Button>
+                </div>
+                <Button variant="secondary" size="sm" onClick={selectAllFiltered} disabled={!canDownloadImages}>Select All</Button>
+                <Button variant="secondary" size="sm" onClick={clearSelection} disabled={!hasSelection}>Clear</Button>
+                <Button variant="outline" size="sm" onClick={handleToggleReady} disabled={!hasSelection}>Toggle Ready</Button>
+                <Button variant="outline" size="sm" onClick={handleDownloadImagesCsv} disabled={!canDownloadImages || downloadingCsv}>
+                  {downloadingCsv ? 'Preparing CSV…' : 'Download CSV'}
                 </Button>
-                <Button size="sm" onClick={handleToggleReady}>
-                  Toggle Ready
+                <Button variant="destructive" size="sm" onClick={handleDeleteSelected} disabled={!hasSelection}>
+                  Delete Selected ({selectedIds.size})
                 </Button>
-              </>
+              </div>
+            </div>
+
+            {!canDownloadImages ? (
+              <div className="text-center py-12">
+                <div className="mb-4">
+                  <Eye className="mx-auto h-12 w-12 text-muted-foreground" />
+                </div>
+                <h3 className="text-lg font-semibold mb-2">No images yet</h3>
+                <p className="text-muted-foreground">Generate your first image from the Prompts page!</p>
+              </div>
+            ) : (
+              <div className={viewMode === 'grid' ? "grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4" : "space-y-4"}>
+                {displayImages.map((image) => {
+                  const imageSrc = getImageSource(image);
+                  const isSelected = selectedIds.has(image.id);
+                  return (
+                    <Dialog key={image.id}>
+                      <DialogTrigger asChild>
+                        <Card className={`cursor-pointer hover:shadow-lg transition-all group relative ${viewMode === 'list' ? 'w-full' : ''}`}>
+                          <CardContent className="p-0">
+                            <Checkbox
+                              checked={isSelected}
+                              onCheckedChange={(checked) => toggleSelect(image.id, checked === true)}
+                              onClick={(e) => e.stopPropagation()}
+                              className="absolute top-2 left-2 z-10 bg-background/80 rounded"
+                            />
+                            <div className="absolute top-2 right-2 z-10 flex flex-col items-end gap-2">
+                              {image.ready ? (
+                                <Badge className="bg-green-500 text-white">Ready</Badge>
+                              ) : (
+                                <Badge className="bg-red-500 text-white">Not Ready</Badge>
+                              )}
+                              <Button
+                                variant="secondary"
+                                size="icon"
+                                className="h-8 w-8"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setFullscreenImage(image);
+                                }}
+                                title="View fullscreen"
+                              >
+                                <Maximize2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                            <div className="aspect-square bg-muted rounded-t-lg overflow-hidden">
+                              {imageSrc ? (
+                                <img
+                                  src={imageSrc}
+                                  alt={image.title || 'Generated image'}
+                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                                  onError={(e) => {
+                                    console.error('Image failed to load:', image.id);
+                                    (e.target as HTMLImageElement).src = FALLBACK_IMAGE_URL;
+                                  }}
+                                />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center">
+                                  <Zap className="h-8 w-8 text-muted-foreground" />
+                                </div>
+                              )}
+                            </div>
+                            <div className="p-3">
+                              <h3 className="font-medium text-sm line-clamp-2 mb-2">
+                                {image.title || 'Untitled'}
+                              </h3>
+                              <div className="flex items-center justify-between text-xs text-muted-foreground mb-2">
+                                <div className="flex items-center gap-1">
+                                  <CalendarDays className="h-3 w-3" />
+                                  {new Date(image.created_at).toLocaleDateString()}
+                                </div>
+                                {image.model && (
+                                  <Badge variant="outline" className="text-xs">
+                                    {getModelDisplayName(image.model) ?? image.model}
+                                  </Badge>
+                                )}
+                              </div>
+                              <div className="flex items-end justify-between text-xs">
+                                <div className="text-sm font-semibold text-foreground">
+                                  {formatCostDisplay(image.cost, image.model)}
+                                </div>
+                                {image.model && (
+                                  <span className="text-[11px] text-muted-foreground font-mono">
+                                    {image.model}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </DialogTrigger>
+                      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+                        <DialogHeader>
+                          <DialogTitle>{image.title || 'Untitled Image'}</DialogTitle>
+                        </DialogHeader>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                          <div className="space-y-4">
+                            {imageSrc ? (
+                              <img
+                                src={imageSrc}
+                                alt={image.title || 'Generated image'}
+                                className="w-full rounded-lg"
+                                onError={(e) => {
+                                  (e.target as HTMLImageElement).src = FULLSCREEN_FALLBACK_URL;
+                                }}
+                              />
+                            ) : (
+                              <div className="aspect-square bg-muted rounded-lg flex items-center justify-center">
+                                <Zap className="h-12 w-12 text-muted-foreground" />
+                              </div>
+                            )}
+                          </div>
+                          <div className="space-y-4">
+                            {image.description && (
+                              <div>
+                                <h4 className="font-semibold mb-2">Description</h4>
+                                <p className="text-sm text-muted-foreground">{image.description}</p>
+                              </div>
+                            )}
+
+                            <div>
+                              <h4 className="font-semibold mb-2">Prompt</h4>
+                              <p className="text-sm text-muted-foreground bg-muted p-3 rounded">{image.prompt}</p>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4 text-sm">
+                              <div>
+                                <div className="flex items-center gap-1 font-medium">
+                                  <MapPin className="h-4 w-4" />
+                                  Location
+                                </div>
+                                <p className="text-muted-foreground">{image.country ?? 'Not specified'}</p>
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-1 font-medium">
+                                  <CalendarDays className="h-4 w-4" />
+                                  Year
+                                </div>
+                                <p className="text-muted-foreground">{image.year ?? 'Not specified'}</p>
+                              </div>
+                              <div className="col-span-2">
+                                <div className="border-t border-border pt-4">
+                                  <ImageSizeDisplay image={image} />
+                                </div>
+                              </div>
+                              {image.width && image.height ? (
+                                <div>
+                                  <div className="font-medium">Dimensions</div>
+                                  <p className="text-muted-foreground">{image.width} × {image.height}</p>
+                                </div>
+                              ) : null}
+                              {image.model ? (
+                                <div>
+                                  <div className="font-medium">Model</div>
+                                  <p className="text-muted-foreground">{image.model}</p>
+                                </div>
+                              ) : null}
+                              {image.output_format && (
+                                <div>
+                                  <div className="font-medium">Format</div>
+                                  <p className="text-muted-foreground">{image.output_format.toUpperCase()}</p>
+                                </div>
+                              )}
+                              {typeof image.cfg_scale === 'number' && (
+                                <div>
+                                  <div className="font-medium">CFG Scale</div>
+                                  <p className="text-muted-foreground">{image.cfg_scale}</p>
+                                </div>
+                              )}
+                              {typeof image.steps === 'number' && (
+                                <div>
+                                  <div className="font-medium">Steps</div>
+                                  <p className="text-muted-foreground">{image.steps}</p>
+                                </div>
+                              )}
+                              {image.aspect_ratio && (
+                                <div>
+                                  <div className="font-medium">Aspect Ratio</div>
+                                  <p className="text-muted-foreground">{image.aspect_ratio}</p>
+                                </div>
+                              )}
+                              {image.cost !== null && (
+                                <div>
+                                  <div className="font-medium">{isReveModel(image.model) ? 'Credits' : 'Cost'}</div>
+                                  <p className="text-muted-foreground">{formatCostDisplay(image.cost, image.model)}</p>
+                                </div>
+                              )}
+                            </div>
+
+                            {image.accuracy_score?.source === 'reve' && (
+                              <div className="border border-dashed border-border rounded-lg p-4 space-y-2">
+                                <h4 className="font-semibold text-sm">REVE Details</h4>
+                                <div className="grid grid-cols-2 gap-3 text-xs">
+                                  <div>
+                                    <div className="font-medium">Request ID</div>
+                                    <p className="text-muted-foreground">{image.accuracy_score.request_id ?? '—'}</p>
+                                  </div>
+                                  <div>
+                                    <div className="font-medium">Credits Used</div>
+                                    <p className="text-muted-foreground">{image.cost ?? image.accuracy_score.credits_used ?? '—'}</p>
+                                  </div>
+                                  <div>
+                                    <div className="font-medium">Credits Remaining</div>
+                                    <p className="text-muted-foreground">{image.accuracy_score.credits_remaining ?? '—'}</p>
+                                  </div>
+                                  <div>
+                                    <div className="font-medium">Source</div>
+                                    <p className="text-muted-foreground">{image.accuracy_score.source}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            <div className="text-xs text-muted-foreground">
+                              Created: {new Date(image.created_at).toLocaleString()}
+                            </div>
+                          </div>
+                        </div>
+                      </DialogContent>
+                    </Dialog>
+                  );
+                })}
+              </div>
             )}
           </div>
-        )}
-
-        {filteredImages.length === 0 ? (
-          <div className="text-center py-12">
-            <div className="mb-4">
-              <Eye className="mx-auto h-12 w-12 text-muted-foreground" />
-            </div>
-            <h3 className="text-lg font-semibold mb-2">No images yet</h3>
-            <p className="text-muted-foreground">Generate your first image from the Prompts page!</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-            {filteredImages.map((image) => {
-              const imageSrc = getImageSource(image);
-              return (
-                <Dialog key={image.id}>
-                  <DialogTrigger asChild>
-                    <Card className="cursor-pointer hover:shadow-lg transition-all group relative">
-                      <CardContent className="p-0">
-                        <Checkbox
-                          checked={selectedIds.includes(image.id)}
-                          onCheckedChange={(checked) => {
-                            if (checked) {
-                              setSelectedIds((prev) => [...prev, image.id]);
-                            } else {
-                              setSelectedIds((prev) => prev.filter((id) => id !== image.id));
-                            }
-                          }}
-                          onClick={(e) => e.stopPropagation()}
-                          className="absolute top-2 left-2 z-10 bg-background/80 rounded"
-                        />
-                        {/* Ready/Not Ready Tag */}
-                        <div className="absolute top-2 right-2 z-10 flex flex-col items-end gap-2">
-                          {image.ready ? (
-                            <Badge className="bg-green-500 text-white">Ready</Badge>
-                          ) : (
-                            <Badge className="bg-red-500 text-white">Not Ready</Badge>
-                          )}
-                          <Button
-                            variant="secondary"
-                            size="icon"
-                            className="h-8 w-8"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setFullscreenImage(image);
-                            }}
-                            title="View fullscreen"
-                          >
-                            <Maximize2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                        <div className="aspect-square bg-muted rounded-t-lg overflow-hidden">
-                          {imageSrc ? (
-                            <img
-                              src={imageSrc}
-                              alt={image.title || 'Generated image'}
-                              className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                              onError={(e) => {
-                                console.error('Image failed to load:', image.id);
-                                (e.target as HTMLImageElement).src = FALLBACK_IMAGE_URL;
-                              }}
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <Zap className="h-8 w-8 text-muted-foreground" />
-                            </div>
-                          )}
-                        </div>
-                        <div className="p-3">
-                          <h3 className="font-medium text-sm line-clamp-2 mb-2">
-                            {image.title || 'Untitled'}
-                          </h3>
-                          <div className="flex items-center justify-between text-xs text-muted-foreground mb-2">
-                            <div className="flex items-center gap-1">
-                              <CalendarDays className="h-3 w-3" />
-                              {new Date(image.created_at).toLocaleDateString()}
-                            </div>
-                            {image.model && (
-                              <Badge variant="outline" className="text-xs">
-                                {getModelDisplayName(image.model) ?? image.model}
-                              </Badge>
-                            )}
-                          </div>
-                          <div className="flex items-end justify-between text-xs">
-                            <div className="text-sm font-semibold text-foreground">
-                              {formatCostDisplay(image.cost, image.model)}
-                            </div>
-                            {image.model && (
-                              <span className="text-[11px] text-muted-foreground font-mono">
-                                {image.model}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </DialogTrigger>
-                  <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-                    <DialogHeader>
-                      <DialogTitle>{image.title || 'Untitled Image'}</DialogTitle>
-                    </DialogHeader>
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                      <div className="space-y-4">
-                        {imageSrc ? (
-                          <img
-                            src={imageSrc}
-                            alt={image.title || 'Generated image'}
-                            className="w-full rounded-lg"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).src = FULLSCREEN_FALLBACK_URL;
-                            }}
-                          />
-                        ) : (
-                          <div className="aspect-square bg-muted rounded-lg flex items-center justify-center">
-                            <Zap className="h-12 w-12 text-muted-foreground" />
-                          </div>
-                        )}
-                      </div>
-                      <div className="space-y-4">
-                        {image.description && (
-                          <div>
-                            <h4 className="font-semibold mb-2">Description</h4>
-                            <p className="text-sm text-muted-foreground">{image.description}</p>
-                          </div>
-                        )}
-
-                        <div>
-                          <h4 className="font-semibold mb-2">Prompt</h4>
-                          <p className="text-sm text-muted-foreground bg-muted p-3 rounded">{image.prompt}</p>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-4 text-sm">
-                          <div>
-                            <div className="flex items-center gap-1 font-medium">
-                              <MapPin className="h-4 w-4" />
-                              Location
-                            </div>
-                            <p className="text-muted-foreground">{image.country ?? 'Not specified'}</p>
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-1 font-medium">
-                              <CalendarDays className="h-4 w-4" />
-                              Year
-                            </div>
-                            <p className="text-muted-foreground">{image.year ?? 'Not specified'}</p>
-                          </div>
-                          <div className="col-span-2">
-                            <div className="border-t border-border pt-4">
-                              <ImageSizeDisplay image={image} />
-                            </div>
-                          </div>
-                          {image.width && image.height ? (
-                            <div>
-                              <div className="font-medium">Dimensions</div>
-                              <p className="text-muted-foreground">{image.width} × {image.height}</p>
-                            </div>
-                          ) : null}
-                          {image.model ? (
-                            <div>
-                              <div className="font-medium">Model</div>
-                              <p className="text-muted-foreground">{image.model}</p>
-                            </div>
-                          ) : null}
-                          {image.output_format && (
-                            <div>
-                              <div className="font-medium">Format</div>
-                              <p className="text-muted-foreground">{image.output_format.toUpperCase()}</p>
-                            </div>
-                          )}
-                          {typeof image.cfg_scale === 'number' && (
-                            <div>
-                              <div className="font-medium">CFG Scale</div>
-                              <p className="text-muted-foreground">{image.cfg_scale}</p>
-                            </div>
-                          )}
-                          {typeof image.steps === 'number' && (
-                            <div>
-                              <div className="font-medium">Steps</div>
-                              <p className="text-muted-foreground">{image.steps}</p>
-                            </div>
-                          )}
-                          {image.aspect_ratio && (
-                            <div>
-                              <div className="font-medium">Aspect Ratio</div>
-                              <p className="text-muted-foreground">{image.aspect_ratio}</p>
-                            </div>
-                          )}
-                          {image.cost !== null && (
-                            <div>
-                              <div className="font-medium">{isReveModel(image.model) ? 'Credits' : 'Cost'}</div>
-                              <p className="text-muted-foreground">{formatCostDisplay(image.cost, image.model)}</p>
-                            </div>
-                          )}
-                        </div>
-
-                        {image.accuracy_score?.source === 'reve' && (
-                          <div className="border border-dashed border-border rounded-lg p-4 space-y-2">
-                            <h4 className="font-semibold text-sm">REVE Details</h4>
-                            <div className="grid grid-cols-2 gap-3 text-xs">
-                              <div>
-                                <div className="font-medium">Request ID</div>
-                                <p className="text-muted-foreground">{image.accuracy_score.request_id ?? '—'}</p>
-                              </div>
-                              <div>
-                                <div className="font-medium">Credits Used</div>
-                                <p className="text-muted-foreground">{image.cost ?? image.accuracy_score.credits_used ?? '—'}</p>
-                              </div>
-                              <div>
-                                <div className="font-medium">Credits Remaining</div>
-                                <p className="text-muted-foreground">{image.accuracy_score.credits_remaining ?? '—'}</p>
-                              </div>
-                              <div>
-                                <div className="font-medium">Source</div>
-                                <p className="text-muted-foreground">{image.accuracy_score.source}</p>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="text-xs text-muted-foreground">
-                          Created: {new Date(image.created_at).toLocaleString()}
-                        </div>
-                      </div>
-                    </div>
-                  </DialogContent>
-                </Dialog>
-              );
-            })}
-          </div>
-        )}
+        </div>
       </div>
+
       <Dialog
         open={!!fullscreenImage}
         onOpenChange={(open) => {

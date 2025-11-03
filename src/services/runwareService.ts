@@ -96,9 +96,9 @@ const BFL_MODEL_CONFIGS: Record<string, BflModelConfig> = {
   },
   "bfl:4@1": {
     workflow: "reference",
-    defaultWidth: 1344,
-    defaultHeight: 576,
-    providerSettings: { promptUpsampling: true, safetyTolerance: 2 },
+    defaultWidth: 1568,
+    defaultHeight: 672,
+    providerSettings: { safetyTolerance: 6 },
     supportsDimensions: true,
     supportsCfgScale: false,
     supportsSteps: false,
@@ -137,7 +137,7 @@ export const generateImageRunware = async (
       return fallback;
     };
 
-    const model = req.model ?? "bfl:2@1";
+    const model = req.model ?? "bfl:4@1";
     const modelKey = model.toLowerCase();
     const isBflModel = modelKey.startsWith("bfl");
     const bflConfig = isBflModel ? BFL_MODEL_CONFIGS[modelKey] : undefined;

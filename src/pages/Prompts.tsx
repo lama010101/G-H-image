@@ -1,6 +1,6 @@
 
-import { useEffect, useState } from "react";
-import FiltersPanel, { FiltersState } from "@/components/filters/FiltersPanel";
+import { useEffect, useMemo, useState } from "react";
+import FiltersPanel from "@/components/filters/FiltersPanel";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -11,11 +11,12 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { Search, Sparkles, MapPin, Calendar, Loader2, Trash } from "lucide-react";
+import { Search, Sparkles, MapPin, Calendar, Loader2, Trash, LayoutGrid, List } from "lucide-react";
 import { GenerationSettingsPanel } from "@/components/generate/GenerationSettingsPanel";
 import { useToast } from "@/hooks/use-toast";
 import { generateImage } from "@/services/imageGeneration";
 import { PromptDetailsDialog } from "@/components/prompt/PromptDetailsDialog";
+import { useSharedPromptGalleryState } from "@/hooks/useSharedPromptGalleryState";
 
 interface Prompt {
   id: string;
@@ -31,7 +32,7 @@ interface Prompt {
   confidence: number | null;
   theme: string | null;
   real_event: boolean | null;
-  images?: { id: string }[]; // joined images to infer usage
+  images?: { id: string; cost: number | null }[]; // joined images to infer usage
 }
 
 interface GenerationSettings {
@@ -44,11 +45,11 @@ interface GenerationSettings {
 }
 
 const defaultSettings: GenerationSettings = {
-  model: "bfl:2@1", // default Runware BFL model
+  model: "bfl:4@1", // default Runware BFL model
   steps: 20,
   cfgScale: 2,
-  width: 1344,
-  height: 576,
+  width: 1568,
+  height: 672,
   imageType: "webp",
 };
 
@@ -56,16 +57,25 @@ const Prompts = () => {
   const pageSizeOptions = [10, 25, 50, 100, 150, 200];
   const [pageSize, setPageSize] = useState<number>(25);
   const [page, setPage] = useState<number>(0);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [filters, setFilters] = useState<FiltersState>({});
+  const { searchTerm, setSearchTerm, filters, setFilters } = useSharedPromptGalleryState();
   const [generatingId, setGeneratingId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkGenerating, setBulkGenerating] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [generationSettings, setGenerationSettings] =
     useState<GenerationSettings>(defaultSettings);
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const { toast } = useToast();
   const queryClient = useQueryClient();
+
+  const zeroCostFilterActive = !!filters.zeroCostOnly;
+
+  const relationalSelect = useMemo(() => {
+    if (zeroCostFilterActive || filters.usedStatus === 'used') {
+      return 'images!inner(id, cost)';
+    }
+    return 'images(id, cost)';
+  }, [zeroCostFilterActive, filters.usedStatus]);
 
   const { data: yearBoundsData } = useQuery({
     queryKey: ['images-year-bounds'],
@@ -102,31 +112,31 @@ const Prompts = () => {
 
   useEffect(() => {
     if (!yearBoundsData) return;
-    setFilters(prev => {
+    setFilters((prev) => {
       const minYear = yearBoundsData.minYear;
       const maxYear = yearBoundsData.maxYear;
+      const bounds: [number, number] =
+        minYear <= maxYear ? [minYear, maxYear] : [maxYear, minYear];
+
       if (!prev.yearRange) {
-        return { ...prev, yearRange: [minYear, maxYear] };
+        return { ...prev, yearRange: bounds };
       }
+
       const [prevMin, prevMax] = prev.yearRange;
-      const clampedMin = Math.max(minYear, Math.min(maxYear, prevMin));
-      const clampedMax = Math.max(minYear, Math.min(maxYear, prevMax));
-      const sorted: [number, number] = clampedMin <= clampedMax ? [clampedMin, clampedMax] : [clampedMax, clampedMin];
+      const clampedMin = Math.max(bounds[0], Math.min(bounds[1], prevMin));
+      const clampedMax = Math.max(bounds[0], Math.min(bounds[1], prevMax));
+      const sorted: [number, number] =
+        clampedMin <= clampedMax ? [clampedMin, clampedMax] : [clampedMax, clampedMin];
       if (sorted[0] === prevMin && sorted[1] === prevMax) return prev;
       return { ...prev, yearRange: sorted };
     });
-  }, [yearBoundsData]);
+  }, [yearBoundsData, setFilters]);
 
   // Fetch total count of prompts matching filters
   const { data: totalCountData } = useQuery({
     queryKey: ['prompts-count', filters, searchTerm],
     queryFn: async () => {
-      const selectForCount =
-        filters.usedStatus === 'used'
-          ? 'id, images!inner(id)'
-          : filters.usedStatus === 'unused'
-            ? 'id, images(id)'
-            : 'id';
+      const selectForCount = `id, ${relationalSelect}`;
 
       let query = supabase
         .from('prompts')
@@ -158,6 +168,8 @@ const Prompts = () => {
       else if (filters.realEventStatus === 'fictional') query = query.eq('real_event', false);
       if (filters.hasFullHints) query = query.eq('has_full_hints', true);
       if (filters.usedStatus === 'unused') query = query.is('images', null);
+      if (filters.usedStatus === 'used') query = query.not('images', 'is', null);
+      if (zeroCostFilterActive) query = query.filter('images.cost', 'eq', 0);
 
       const { count, error } = await query;
       if (error) throw error;
@@ -171,7 +183,7 @@ const Prompts = () => {
   const { data: prompts, isLoading, error } = useQuery({
     queryKey: ['prompts', page, pageSize, filters, searchTerm],
     queryFn: async () => {
-      const imageSelect = filters.usedStatus === 'used' ? 'images!inner(id)' : 'images(id)';
+      const imageSelect = relationalSelect;
 
       let query = supabase
         .from('prompts')
@@ -204,6 +216,7 @@ const Prompts = () => {
       else if (filters.realEventStatus === 'fictional') query = query.eq('real_event', false);
       if (filters.hasFullHints) query = query.eq('has_full_hints', true);
       if (filters.usedStatus === 'unused') query = query.is('images', null);
+      if (zeroCostFilterActive) query = query.filter('images.cost', 'eq', 0);
 
       query = query.range(page * pageSize, (page + 1) * pageSize - 1);
 
@@ -479,6 +492,24 @@ const Prompts = () => {
                 />
               </div>
               <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant={viewMode === 'grid' ? 'default' : 'outline'}
+                      size="icon"
+                      onClick={() => setViewMode('grid')}
+                      aria-label="Grid view"
+                    >
+                      <LayoutGrid className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant={viewMode === 'list' ? 'default' : 'outline'}
+                      size="icon"
+                      onClick={() => setViewMode('list')}
+                      aria-label="List view"
+                    >
+                      <List className="h-4 w-4" />
+                    </Button>
+                  </div>
                   <Button variant="secondary" size="sm" onClick={selectAllFiltered} disabled={filteredPrompts.length === 0}>Select All</Button>
                   <Button variant="secondary" size="sm" onClick={clearSelection} disabled={selectedIds.size === 0}>Clear</Button>
                   <Button size="sm" onClick={handleGenerateSelected} disabled={selectedIds.size === 0 || bulkGenerating}>
@@ -517,7 +548,7 @@ const Prompts = () => {
                 </p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+              <div className={viewMode === 'grid' ? "grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6" : "space-y-6"}>
                 {filteredPrompts.map((prompt) => (
                   <PromptDetailsDialog
                     key={prompt.id}
@@ -533,7 +564,7 @@ const Prompts = () => {
                           }
                         }}
                       >
-                        <Card className="hover:shadow-lg transition-shadow relative group h-full flex flex-col">
+                        <Card className={`hover:shadow-lg transition-shadow relative group h-full flex flex-col ${viewMode === 'list' ? 'w-full' : ''}`}>
                           <Checkbox
                             className="absolute top-4 left-4 z-10 bg-background/80 backdrop-blur-sm"
                             checked={selectedIds.has(prompt.id)}

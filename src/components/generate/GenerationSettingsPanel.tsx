@@ -31,7 +31,7 @@ const defaultModels = [
   { label: "BFL FLUX.1.1 Pro (Text-to-Image)", value: "bfl:2@1" },
   { label: "BFL FLUX.1.1 Pro Ultra (Hi-Res Text-to-Image)", value: "bfl:2@2" },
   { label: "BFL FLUX Kontext Pro", value: "bfl:3@1" },
-  { label: "BFL FLUX Kontext Max", value: "bfl:4@1" },
+  { label: "FLUX.1 Kontext [max]", value: "bfl:4@1" },
   { label: "Runware 100", value: "runware:100@1" },
   { label: "RunDiffusion 130", value: "rundiffusion:130@100" },
   { label: "REVE (Latest)", value: "reve:latest" },
@@ -46,7 +46,7 @@ const modelPresets: Record<string, Partial<GenerationSettings>> = {
   "bfl:2@1": { width: 1344, height: 576 },
   "bfl:2@2": { width: 1344, height: 576 },
   "bfl:3@1": { width: 1344, height: 576 },
-  "bfl:4@1": { width: 1344, height: 576 },
+  "bfl:4@1": { width: 1568, height: 672 },
   "reve:latest": { width: 1536, height: 1024, imageType: "webp" },
   "reve:reve-create@20250915": { width: 1536, height: 1024, imageType: "webp" },
 };
