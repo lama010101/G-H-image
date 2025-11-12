@@ -12,30 +12,39 @@ import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 
-interface PromptDetailsDialogProps {
-  trigger: React.ReactNode;
-  prompt: {
-    id: string;
-    title: string | null;
-    description: string | null;
-    prompt: string;
-    country: string | null;
-    year: number | null;
-    has_full_hints: boolean | null;
-    celebrity: boolean | null;
-    approx_people_count: number | null;
-    confidence: number | null;
-    theme: string | null;
-    [key: string]: any;
-  };
+interface PromptData {
+  id: string;
+  title: string | null;
+  description: string | null;
+  prompt: string;
+  country: string | null;
+  year: number | null;
+  has_full_hints: boolean | null;
+  celebrity: boolean | null;
+  approx_people_count: number | null;
+  confidence: number | null;
+  theme: string | null;
+  manually_used: boolean | null;
+  [key: string]: any;
 }
 
-export const PromptDetailsDialog: React.FC<PromptDetailsDialogProps> = ({ trigger, prompt }) => {
+interface PromptDetailsDialogProps {
+  trigger: React.ReactNode;
+  prompt: PromptData;
+  onPromptUpdated?: (updates: Partial<PromptData>) => void;
+}
+
+export const PromptDetailsDialog: React.FC<PromptDetailsDialogProps> = ({ trigger, prompt, onPromptUpdated }) => {
   const [isEditing, setIsEditing] = React.useState(false);
   const [editedPrompt, setEditedPrompt] = React.useState(prompt);
   const [isSaving, setIsSaving] = React.useState(false);
+  const [isManualToggleSaving, setIsManualToggleSaving] = React.useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
+
+  React.useEffect(() => {
+    setEditedPrompt(prompt);
+  }, [prompt]);
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -145,6 +154,9 @@ export const PromptDetailsDialog: React.FC<PromptDetailsDialogProps> = ({ trigge
       queryClient.invalidateQueries({ queryKey: ['prompts'] });
       queryClient.invalidateQueries({ queryKey: ['prompts-count'] });
 
+      setEditedPrompt((prev) => ({ ...prev, ...updateData }));
+      onPromptUpdated?.(updateData);
+
       setIsEditing(false);
     } catch (err) {
       console.error('Update failed:', err);
@@ -167,6 +179,45 @@ export const PromptDetailsDialog: React.FC<PromptDetailsDialogProps> = ({ trigge
     setEditedPrompt(prev => ({ ...prev, [field]: value }));
   };
 
+  const handleManualStatusChange = async (checked: boolean) => {
+    setIsManualToggleSaving(true);
+    try {
+      const { data, error } = await supabase
+        .from('prompts')
+        .update({ manually_used: checked })
+        .eq('id', prompt.id)
+        .select()
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      const manualValue = data?.manually_used ?? checked;
+      setEditedPrompt(prev => ({ ...prev, manually_used: manualValue }));
+      onPromptUpdated?.({ manually_used: manualValue });
+
+      toast({
+        title: manualValue ? 'Marked as OK' : 'Marked as Not OK',
+        description: manualValue
+          ? 'This prompt will no longer appear under failed generations.'
+          : 'This prompt will appear under failed generations when applicable.',
+      });
+
+      queryClient.invalidateQueries({ queryKey: ['prompts'] });
+      queryClient.invalidateQueries({ queryKey: ['prompts-count'] });
+    } catch (err) {
+      console.error('Failed to update manual status:', err);
+      toast({
+        title: 'Update Failed',
+        description: err instanceof Error ? err.message : 'Could not update manual status',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsManualToggleSaving(false);
+    }
+  };
+
   return (
     <Dialog>
       <DialogTrigger asChild>
@@ -179,14 +230,27 @@ export const PromptDetailsDialog: React.FC<PromptDetailsDialogProps> = ({ trigge
               {isEditing ? 'Edit Prompt' : prompt.title || 'Untitled Prompt'}
             </DialogTitle>
             {!isEditing && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setIsEditing(true)}
-              >
-                <Edit3 className="h-4 w-4 mr-2" />
-                Edit
-              </Button>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id={`manual-status-${prompt.id}`}
+                    checked={!!editedPrompt.manually_used}
+                    onCheckedChange={handleManualStatusChange}
+                    disabled={isManualToggleSaving}
+                  />
+                  <Label htmlFor={`manual-status-${prompt.id}`} className="text-sm">
+                    Mark as OK
+                  </Label>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setIsEditing(true)}
+                >
+                  <Edit3 className="h-4 w-4 mr-2" />
+                  Edit
+                </Button>
+              </div>
             )}
           </div>
           <DialogDescription>
@@ -322,6 +386,10 @@ export const PromptDetailsDialog: React.FC<PromptDetailsDialogProps> = ({ trigge
                 </AccordionItem>
               </Accordion>
               <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <div className="font-medium">Marked OK</div>
+                  <div className="text-muted-foreground">{editedPrompt.manually_used ? 'Yes' : 'No'}</div>
+                </div>
                 {prompt.country && (
                   <div>
                     <div className="flex items-center gap-1 font-medium">

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import FiltersPanel from "@/components/filters/FiltersPanel";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { downloadCsv } from "@/lib/csv";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -32,6 +33,8 @@ interface Prompt {
   confidence: number | null;
   theme: string | null;
   real_event: boolean | null;
+  manually_used: boolean | null;
+  continent?: string | null;
   images?: { id: string; cost: number | null }[]; // joined images to infer usage
 }
 
@@ -53,6 +56,25 @@ const defaultSettings: GenerationSettings = {
   imageType: "webp",
 };
 
+const EXCLUDED_CSV_COLUMNS = new Set([
+  "ai_generated",
+  "auth_last_checked_at",
+  "authenticity_confidence",
+  "authenticity_verdict",
+  "is_ready",
+  "last_verified",
+  "manually_used",
+  "negative_prompt",
+  "used",
+  "verification_citations",
+  "verification_explanation",
+  "verification_models",
+  "verification_report",
+  "verification_source_count",
+  "verification_sources",
+  "verified_by",
+]);
+
 const Prompts = () => {
   const pageSizeOptions = [10, 25, 50, 100, 150, 200];
   const [pageSize, setPageSize] = useState<number>(25);
@@ -62,6 +84,7 @@ const Prompts = () => {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkGenerating, setBulkGenerating] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [downloadingCsv, setDownloadingCsv] = useState(false);
   const [generationSettings, setGenerationSettings] =
     useState<GenerationSettings>(defaultSettings);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -71,10 +94,10 @@ const Prompts = () => {
   const zeroCostFilterActive = !!filters.zeroCostOnly;
 
   const relationalSelect = useMemo(() => {
-    if (zeroCostFilterActive || filters.usedStatus === 'used') {
-      return 'images!inner(id, cost)';
+    if (zeroCostFilterActive || (filters.usedStatus && filters.usedStatus !== 'all')) {
+      return 'images!inner(id, cost, optimized_image_url)';
     }
-    return 'images(id, cost)';
+    return 'images(id, cost, optimized_image_url)';
   }, [zeroCostFilterActive, filters.usedStatus]);
 
   const { data: yearBoundsData } = useQuery({
@@ -132,6 +155,45 @@ const Prompts = () => {
     });
   }, [yearBoundsData, setFilters]);
 
+  const { data: filterOptionsData } = useQuery({
+    queryKey: ['prompts-filter-options'],
+    queryFn: async () => {
+      const normalize = (rows: any[] | null | undefined, key: string) =>
+        (rows ?? [])
+          .map((row) => row[key] as string | null)
+          .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          .map((value) => value.trim())
+          .sort((a, b) => a.localeCompare(b));
+
+      const [themeResult, locationResult, continentResult] = await Promise.all([
+        supabase
+          .from('prompts')
+          .select('theme')
+          .not('theme', 'is', null),
+        supabase
+          .from('prompts')
+          .select('country')
+          .not('country', 'is', null),
+        supabase
+          .from('prompts')
+          .select('continent:1_where_continent')
+          .not('1_where_continent', 'is', null),
+      ]);
+
+      if (themeResult.error) throw themeResult.error;
+      if (locationResult.error) throw locationResult.error;
+      if (continentResult.error) throw continentResult.error;
+
+      return {
+        themes: normalize(themeResult.data, 'theme'),
+        locations: normalize(locationResult.data, 'country'),
+        continents: normalize(continentResult.data, 'continent'),
+      } as const;
+    },
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
   // Fetch total count of prompts matching filters
   const { data: totalCountData } = useQuery({
     queryKey: ['prompts-count', filters, searchTerm],
@@ -145,6 +207,7 @@ const Prompts = () => {
       if (searchTerm) query = query.ilike('title', `%${searchTerm}%`);
       if (filters.theme) query = query.eq('theme', filters.theme);
       if (filters.location) query = query.eq('country', filters.location);
+      if (filters.continent) query = query.eq('1_where_continent', filters.continent);
       if (filters.yearRange) {
         const [minYear, maxYear] = filters.yearRange;
         query = query.gte('year', minYear).lte('year', maxYear);
@@ -167,8 +230,16 @@ const Prompts = () => {
       if (filters.realEventStatus === 'true') query = query.eq('real_event', true);
       else if (filters.realEventStatus === 'fictional') query = query.eq('real_event', false);
       if (filters.hasFullHints) query = query.eq('has_full_hints', true);
-      if (filters.usedStatus === 'unused') query = query.is('images', null);
-      if (filters.usedStatus === 'used') query = query.not('images', 'is', null);
+      if (filters.usedStatus === 'unused') {
+        query = query.filter('images.id', 'is', null);
+      } else if (filters.usedStatus === 'used') {
+        query = query.filter('images.id', 'not.is', null).filter('images.optimized_image_url', 'not.is', null);
+      } else if (filters.usedStatus === 'failed') {
+        query = query
+          .filter('images.id', 'not.is', null)
+          .filter('images.optimized_image_url', 'is', null)
+          .eq('manually_used', false);
+      }
       if (zeroCostFilterActive) query = query.filter('images.cost', 'eq', 0);
 
       const { count, error } = await query;
@@ -187,12 +258,13 @@ const Prompts = () => {
 
       let query = supabase
         .from('prompts')
-        .select(`id, title, description, prompt, negative_prompt, country, year, has_full_hints, confidence, theme, celebrity, approx_people_count, real_event, ${imageSelect}`)
+        .select(`id, title, description, prompt, negative_prompt, country, year, has_full_hints, confidence, theme, celebrity, approx_people_count, real_event, manually_used, continent:"1_where_continent", ${imageSelect}`)
         .order('created_at', { ascending: false });
 
       if (searchTerm) query = query.ilike('title', `%${searchTerm}%`);
       if (filters.theme) query = query.eq('theme', filters.theme);
       if (filters.location) query = query.eq('country', filters.location);
+      if (filters.continent) query = query.eq('1_where_continent', filters.continent);
       if (filters.yearRange) {
         const [minYear, maxYear] = filters.yearRange;
         query = query.gte('year', minYear).lte('year', maxYear);
@@ -215,7 +287,16 @@ const Prompts = () => {
       if (filters.realEventStatus === 'true') query = query.eq('real_event', true);
       else if (filters.realEventStatus === 'fictional') query = query.eq('real_event', false);
       if (filters.hasFullHints) query = query.eq('has_full_hints', true);
-      if (filters.usedStatus === 'unused') query = query.is('images', null);
+      if (filters.usedStatus === 'unused') {
+        query = query.is('images', null);
+      } else if (filters.usedStatus === 'used') {
+        query = query.not('images', 'is', null).filter('images.optimized_image_url', 'not.is', null);
+      } else if (filters.usedStatus === 'failed') {
+        query = query
+          .not('images', 'is', null)
+          .filter('images.optimized_image_url', 'is', null)
+          .eq('manually_used', false);
+      }
       if (zeroCostFilterActive) query = query.filter('images.cost', 'eq', 0);
 
       query = query.range(page * pageSize, (page + 1) * pageSize - 1);
@@ -247,6 +328,100 @@ const Prompts = () => {
 
   const clearSelection = () => setSelectedIds(new Set());
 
+  const applyPromptPatch = (promptId: string, updates: Partial<Prompt>) => {
+    queryClient.setQueryData(
+      ['prompts', page, pageSize, filters, searchTerm],
+      (oldData: Prompt[] | undefined) =>
+        oldData?.map((p) => (p.id === promptId ? { ...p, ...updates } : p))
+    );
+  };
+
+  const handleDownloadSelectedEventsCsv = async () => {
+    if (selectedIds.size === 0 || downloadingCsv) return;
+
+    const ids = Array.from(selectedIds);
+
+    try {
+      setDownloadingCsv(true);
+
+      const chunkSize = 100;
+      const rows: Record<string, unknown>[] = [];
+
+      for (let i = 0; i < ids.length; i += chunkSize) {
+        const chunk = ids.slice(i, i + chunkSize);
+        const { data, error } = await supabase
+          .from('prompts')
+          .select('*')
+          .in('id', chunk)
+          .limit(chunk.length);
+
+        if (error) {
+          throw error;
+        }
+
+        rows.push(...((data ?? []) as Record<string, unknown>[]));
+      }
+
+      const rowsById = rows.reduce<Map<string, Record<string, unknown>>>((acc, row) => {
+        const id = String(row.id ?? '');
+        if (id) acc.set(id, row);
+        return acc;
+      }, new Map());
+
+      const orderedRows = ids
+        .map((id) => rowsById.get(id))
+        .filter((row): row is Record<string, unknown> => Boolean(row));
+
+      if (orderedRows.length === 0) {
+        return;
+      }
+
+      const headerSet = new Set<string>();
+      for (const row of orderedRows) {
+        Object.keys(row ?? {})
+          .filter((key) => !EXCLUDED_CSV_COLUMNS.has(key))
+          .forEach((key) => headerSet.add(key));
+      }
+
+      const headerOrder = [
+        'id',
+        ...Array.from(headerSet)
+          .filter((key) => key !== 'id')
+          .sort((a, b) => a.localeCompare(b)),
+      ];
+
+      const numericYears = orderedRows
+        .map((row) => {
+          const raw = row['year'];
+          if (typeof raw === 'number' && Number.isFinite(raw)) {
+            return raw;
+          }
+          if (typeof raw === 'string') {
+            const trimmed = raw.trim();
+            if (trimmed.length === 0) return null;
+            const parsed = Number(trimmed);
+            return Number.isFinite(parsed) ? parsed : null;
+          }
+          return null;
+        })
+        .filter((value): value is number => value !== null);
+
+      const yearLabel = numericYears.length > 0
+        ? (() => {
+            const minYear = Math.min(...numericYears);
+            const maxYear = Math.max(...numericYears);
+            return `${minYear} to ${maxYear}`;
+          })()
+        : 'unknown to unknown';
+
+      downloadCsv(`${yearLabel}.csv`, orderedRows, headerOrder);
+    } catch (err) {
+      console.error('Failed to download events CSV:', err);
+    } finally {
+      setDownloadingCsv(false);
+    }
+  };
+
   const handleGenerateSelected = async () => {
     if (selectedIds.size === 0) return;
     setBulkGenerating(true);
@@ -264,9 +439,37 @@ const Prompts = () => {
     const confirmDelete = window.confirm(`Delete ${selectedIds.size} selected prompt(s)? This cannot be undone.`);
     if (!confirmDelete) return;
 
+    const ids = Array.from(selectedIds);
+    let imageIdsToDelete: string[] = [];
+
     try {
       setBulkDeleting(true);
-      const ids = Array.from(selectedIds);
+
+      const { data: relatedImageRows, error: relatedFetchError } = await supabase
+        .from('images')
+        .select('id')
+        .in('prompt_id', ids);
+
+      if (relatedFetchError) {
+        console.error('Failed to fetch related images for selected prompts:', relatedFetchError);
+      } else {
+        const uniqueImageIds = new Set(
+          (relatedImageRows ?? [])
+            .map((row) => (typeof row.id === 'string' ? row.id.trim() : ''))
+            .filter((value): value is string => Boolean(value?.length))
+        );
+
+        if (uniqueImageIds.size > 0) {
+          const confirmCascade = window.confirm(
+            `Also delete ${uniqueImageIds.size} related image${uniqueImageIds.size > 1 ? 's' : ''}? This cannot be undone.`
+          );
+
+          if (confirmCascade) {
+            imageIdsToDelete = Array.from(uniqueImageIds);
+          }
+        }
+      }
+
       const { error } = await supabase
         .from('prompts')
         .delete()
@@ -283,6 +486,19 @@ const Prompts = () => {
       // Invalidate list and count queries
       queryClient.invalidateQueries({ queryKey: ['prompts', page, pageSize, filters, searchTerm] });
       queryClient.invalidateQueries({ queryKey: ['prompts-count', filters, searchTerm] });
+
+      if (imageIdsToDelete.length > 0) {
+        const { error: imageDeleteError } = await supabase
+          .from('images')
+          .delete()
+          .in('id', imageIdsToDelete);
+
+        if (imageDeleteError) {
+          console.error('Failed to delete related images:', imageDeleteError);
+        } else {
+          queryClient.invalidateQueries({ queryKey: ['images'] });
+        }
+      }
 
       toast({
         title: 'Deleted',
@@ -302,10 +518,37 @@ const Prompts = () => {
     }
   };
 
-  // Log the current state for debugging
-  console.log('Prompts query state:', { isLoading, error, promptsCount: prompts?.length });
-
   const filteredPrompts = prompts || [];
+
+  const themeOptions = useMemo(() => {
+    const base = filterOptionsData?.themes ?? [];
+    const fallback = filteredPrompts
+      .map((prompt) => prompt.theme)
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map((value) => value.trim());
+    const current = filters.theme && filters.theme.trim().length > 0 ? [filters.theme.trim()] : [];
+    return Array.from(new Set([...base, ...fallback, ...current])).sort((a, b) => a.localeCompare(b));
+  }, [filterOptionsData, filteredPrompts, filters.theme]);
+
+  const locationOptions = useMemo(() => {
+    const base = filterOptionsData?.locations ?? [];
+    const fallback = filteredPrompts
+      .map((prompt) => prompt.country)
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map((value) => value.trim());
+    const current = filters.location && filters.location.trim().length > 0 ? [filters.location.trim()] : [];
+    return Array.from(new Set([...base, ...fallback, ...current])).sort((a, b) => a.localeCompare(b));
+  }, [filterOptionsData, filteredPrompts, filters.location]);
+
+  const continentOptions = useMemo(() => {
+    const base = filterOptionsData?.continents ?? [];
+    const fallback = filteredPrompts
+      .map((prompt) => prompt.continent)
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map((value) => value.trim());
+    const current = filters.continent && filters.continent.trim().length > 0 ? [filters.continent.trim()] : [];
+    return Array.from(new Set([...base, ...fallback, ...current])).sort((a, b) => a.localeCompare(b));
+  }, [filterOptionsData, filteredPrompts, filters.continent]);
 
   const toggleRealEvent = async (prompt: Prompt, isRealEvent: boolean) => {
     console.log('Toggling real_event:', { promptId: prompt.id, currentValue: prompt.real_event, newValue: isRealEvent });
@@ -437,10 +680,11 @@ const Prompts = () => {
             <div className="space-y-6 sticky top-6">
               <FiltersPanel
                 state={filters}
-                onChange={setFilters}
+                onApply={setFilters}
                 onClear={() => setFilters({})}
-                themeOptions={[...new Set(prompts?.map(p => p.theme).filter(Boolean) as string[])]}
-                locationOptions={[...new Set(prompts?.map(p => p.country).filter(Boolean) as string[])]}
+                themeOptions={themeOptions}
+                locationOptions={locationOptions}
+                continentOptions={continentOptions}
                 yearBounds={yearBoundsData}
               />
               <GenerationSettingsPanel
@@ -452,38 +696,43 @@ const Prompts = () => {
 
           {/* Right column for prompts grid */}
           <div className="flex-1">
+            <div className="mb-3 text-sm text-muted-foreground">
+              Showing {totalCountData === undefined
+                ? '...'
+                : `${totalCountData.toLocaleString()} filtered result${totalCountData === 1 ? '' : 's'}`}
+            </div>
             <div className="flex flex-col sm:flex-row justify-between items-center mb-6 gap-4">
               {/* Pagination & Page size */}
               <div className="flex items-center gap-4 mb-2 sm:mb-0">
-                <Button variant="outline" size="sm" disabled={page===0} onClick={()=>setPage(p=>Math.max(0,p-1))}>Prev</Button>
-                <span className="text-sm">Page {page+1} of {totalCountData && pageSize ? Math.max(1, Math.ceil(totalCountData / pageSize)) : '...'}</span>
-<input
-  type="number"
-  min={1}
-  max={totalCountData && pageSize ? Math.max(1, Math.ceil(totalCountData / pageSize)) : 1}
-  value={page+1}
-  onChange={e => {
-    const val = Number(e.target.value);
-    if (!isNaN(val) && val >= 1 && totalCountData && pageSize && val <= Math.ceil(totalCountData / pageSize)) {
-      setPage(val-1);
-    }
-  }}
-  className="w-16 px-2 py-1 border rounded text-sm ml-2"
-  style={{width:'60px'}}
-/>
-
-                <Button variant="outline" size="sm" disabled={prompts && prompts.length < pageSize} onClick={()=>setPage(p=>p+1)}>Next</Button>
-                <Select value={pageSize.toString()} onValueChange={v=>{setPageSize(parseInt(v)); setPage(0);}}>
+                <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(p => Math.max(0, p - 1))}>Prev</Button>
+                <span className="text-sm">Page {page + 1} of {totalCountData && pageSize ? Math.max(1, Math.ceil(totalCountData / pageSize)) : '...'}</span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={totalCountData && pageSize ? Math.max(1, Math.ceil(totalCountData / pageSize)) : 1}
+                  value={page + 1}
+                  onChange={e => {
+                    const val = Number(e.target.value);
+                    if (!Number.isNaN(val) && val >= 1 && totalCountData && pageSize && val <= Math.ceil(totalCountData / pageSize)) {
+                      setPage(val - 1);
+                    }
+                  }}
+                  className="w-16 px-2 py-1 border rounded text-sm"
+                />
+                <Button variant="outline" size="sm" disabled={prompts && prompts.length < pageSize} onClick={() => setPage(p => p + 1)}>Next</Button>
+                <Select value={pageSize.toString()} onValueChange={v => { setPageSize(parseInt(v, 10)); setPage(0); }}>
                   <SelectTrigger className="w-20">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {pageSizeOptions.map(opt=> <SelectItem key={opt} value={opt.toString()}>{opt}/page</SelectItem>)}
+                    {pageSizeOptions.map(opt => (
+                      <SelectItem key={opt} value={opt.toString()}>{opt}/page</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
               <div className="relative w-full sm:max-w-xs">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground h-4 w-4" />
                 <Input
                   placeholder="Search prompts..."
                   value={searchTerm}
@@ -492,52 +741,60 @@ const Prompts = () => {
                 />
               </div>
               <div className="flex items-center gap-2 flex-wrap">
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant={viewMode === 'grid' ? 'default' : 'outline'}
-                      size="icon"
-                      onClick={() => setViewMode('grid')}
-                      aria-label="Grid view"
-                    >
-                      <LayoutGrid className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant={viewMode === 'list' ? 'default' : 'outline'}
-                      size="icon"
-                      onClick={() => setViewMode('list')}
-                      aria-label="List view"
-                    >
-                      <List className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <Button variant="secondary" size="sm" onClick={selectAllFiltered} disabled={filteredPrompts.length === 0}>Select All</Button>
-                  <Button variant="secondary" size="sm" onClick={clearSelection} disabled={selectedIds.size === 0}>Clear</Button>
-                  <Button size="sm" onClick={handleGenerateSelected} disabled={selectedIds.size === 0 || bulkGenerating}>
-                      {bulkGenerating ? (
-                          <>
-                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                              Generating ({selectedIds.size})
-                          </>
-                      ) : (
-                          <>
-                            <Sparkles className="mr-2 h-4 w-4" />
-                            Generate ({selectedIds.size})
-                          </>
-                      )}
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant={viewMode === 'grid' ? 'default' : 'outline'}
+                    size="icon"
+                    onClick={() => setViewMode('grid')}
+                    aria-label="Grid view"
+                  >
+                    <LayoutGrid className="h-4 w-4" />
                   </Button>
-                  <Button variant="destructive" size="sm" onClick={handleDeleteSelected} disabled={selectedIds.size === 0 || bulkDeleting}>
-                    {bulkDeleting ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Deleting ({selectedIds.size})
-                      </>
-                    ) : (
-                      <>
-                        <Trash className="mr-2 h-4 w-4" />
-                        Delete ({selectedIds.size})
-                      </>
-                    )}
+                  <Button
+                    variant={viewMode === 'list' ? 'default' : 'outline'}
+                    size="icon"
+                    onClick={() => setViewMode('list')}
+                    aria-label="List view"
+                  >
+                    <List className="h-4 w-4" />
                   </Button>
+                </div>
+                <Button variant="secondary" size="sm" onClick={selectAllFiltered} disabled={filteredPrompts.length === 0}>Select All</Button>
+                <Button variant="secondary" size="sm" onClick={clearSelection} disabled={selectedIds.size === 0}>Clear</Button>
+                <Button size="sm" onClick={handleGenerateSelected} disabled={selectedIds.size === 0 || bulkGenerating}>
+                  {bulkGenerating ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Generating ({selectedIds.size})
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="mr-2 h-4 w-4" />
+                      Generate ({selectedIds.size})
+                    </>
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDownloadSelectedEventsCsv}
+                  disabled={selectedIds.size === 0 || downloadingCsv}
+                >
+                  {downloadingCsv ? 'Preparing CSV…' : `Download Selected (${selectedIds.size})`}
+                </Button>
+                <Button variant="destructive" size="sm" onClick={handleDeleteSelected} disabled={selectedIds.size === 0 || bulkDeleting}>
+                  {bulkDeleting ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Deleting ({selectedIds.size})
+                    </>
+                  ) : (
+                    <>
+                      <Trash className="mr-2 h-4 w-4" />
+                      Delete ({selectedIds.size})
+                    </>
+                  )}
+                </Button>
               </div>
             </div>
 
@@ -553,6 +810,7 @@ const Prompts = () => {
                   <PromptDetailsDialog
                     key={prompt.id}
                     prompt={prompt}
+                    onPromptUpdated={(updates) => applyPromptPatch(prompt.id, updates)}
                     trigger={
                       <div
                         style={{ cursor: "pointer" }}
@@ -595,17 +853,20 @@ const Prompts = () => {
                                     {prompt.real_event ? 'Real Event' : 'Not Real'}
                                   </Label>
                                 </div>
-                                {prompt.real_event ? (
-                                  <Badge variant="success" className="shrink-0">Real</Badge>
-                                ) : (
-                                  <Badge variant="destructive" className="shrink-0">Fictional</Badge>
-                                )}
+                                <Badge variant={prompt.real_event ? 'success' : 'destructive'} className="shrink-0">
+                                  {prompt.real_event ? 'Real' : 'Fictional'}
+                                </Badge>
                                 {typeof prompt.confidence === 'number' && (
                                   <Badge variant="outline" className="shrink-0">Confidence: {prompt.confidence}</Badge>
                                 )}
                                 {(prompt.images && prompt.images.length > 0) && (
                                   <Badge variant="success" className="shrink-0">
                                     Used
+                                  </Badge>
+                                )}
+                                {prompt.manually_used && (
+                                  <Badge variant="outline" className="shrink-0">
+                                    Marked OK
                                   </Badge>
                                 )}
                                 {prompt.has_full_hints && (
@@ -671,6 +932,7 @@ const Prompts = () => {
       </div>
     </div>
   );
-};
+}
+;
 
 export default Prompts;

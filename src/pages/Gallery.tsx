@@ -46,6 +46,7 @@ interface Image {
   original_size_kb: number | null;
   output_format: string | null;
   binary?: string | null;
+  continent?: string | null;
 }
 
 const MODEL_NAME_MAP: Record<string, string> = {
@@ -150,7 +151,7 @@ const ImageSizeDisplay = ({ image }: { image: Image }) => {
 };
 
 const Gallery = () => {
-  const pageSizeOptions = [10, 25, 50, 100, 150, 200];
+  const pageSizeOptions = [10, 25, 50, 75, 100];
   const { searchTerm, setSearchTerm, filters, setFilters } = useSharedPromptGalleryState();
   const activeFilters = useMemo(() => filters, [filters]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -168,6 +169,9 @@ const Gallery = () => {
     }
     if (activeFilters.location) {
       filteredQuery = filteredQuery.eq('country', activeFilters.location);
+    }
+    if (activeFilters.continent) {
+      filteredQuery = filteredQuery.eq('1_where_continent', activeFilters.continent);
     }
     if (activeFilters.dateCreatedRange) {
       const [fromTs, toTs] = activeFilters.dateCreatedRange;
@@ -245,6 +249,45 @@ const Gallery = () => {
     retry: false,
   });
 
+  const { data: filterOptionsData } = useQuery({
+    queryKey: ['images-filter-options'],
+    queryFn: async () => {
+      const normalize = (rows: any[] | null | undefined, key: string) =>
+        (rows ?? [])
+          .map((row) => row[key] as string | null)
+          .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          .map((value) => value.trim())
+          .sort((a, b) => a.localeCompare(b));
+
+      const [themeResult, locationResult, continentResult] = await Promise.all([
+        supabase
+          .from('images')
+          .select('theme')
+          .not('theme', 'is', null),
+        supabase
+          .from('images')
+          .select('country')
+          .not('country', 'is', null),
+        supabase
+          .from('images')
+          .select('1_where_continent')
+          .not('1_where_continent', 'is', null),
+      ]);
+
+      if (themeResult.error) throw themeResult.error;
+      if (locationResult.error) throw locationResult.error;
+      if (continentResult.error) throw continentResult.error;
+
+      return {
+        themes: normalize(themeResult.data, 'theme'),
+        locations: normalize(locationResult.data, 'country'),
+        continents: normalize(continentResult.data, '1_where_continent'),
+      } as const;
+    },
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
   useEffect(() => {
     if (!yearBoundsData) return;
     setFilters((prev) => {
@@ -316,7 +359,6 @@ const Gallery = () => {
   const { data: images, isLoading, error } = useQuery({
     queryKey: ['images', page, pageSize, activeFilters, searchTerm],
     queryFn: async () => {
-      console.log('Fetching images from database with filters...');
       try {
         const primaryColumns = [
           'id',
@@ -344,6 +386,7 @@ const Gallery = () => {
           'desktop_size_kb',
           'original_size_kb',
           'output_format',
+          'continent:"1_where_continent"',
         ].join(',');
         const fallbackColumns = [
           'id',
@@ -356,6 +399,7 @@ const Gallery = () => {
           'model',
           'cost',
           'output_format',
+          'continent:"1_where_continent"',
         ].join(',');
 
         const rangeStart = page * pageSize;
@@ -370,28 +414,19 @@ const Gallery = () => {
           return q.range(rangeStart, rangeEnd).returns<Image[]>();
         };
 
-        console.log('Gallery fetch columns:', primaryColumns);
-        console.log('Gallery fetch range:', rangeStart, rangeEnd);
-
         const { data, error } = await buildQuery(primaryColumns, true);
         if (error) {
-          console.warn('Supabase fetch error:', error);
           if ((error as { code?: string })?.code === '57014') {
-            console.warn('Timeout when ordering by created_at. Retrying without order...');
             const { data: fallbackData, error: fallbackError } = await buildQuery(fallbackColumns, false);
             if (fallbackError) {
-              console.warn('Fallback fetch error:', fallbackError);
               throw new Error('Failed to fetch images – Supabase unavailable');
             }
-            console.log('Fetched images from Supabase (fallback):', fallbackData?.length || 0);
             return sortByCreatedAtDesc(fallbackData ?? []);
           }
           throw new Error('Failed to fetch images – Supabase unavailable');
         }
-        console.log('Fetched images from Supabase:', data?.length || 0);
         return sortByCreatedAtDesc(data ?? []);
       } catch (e) {
-        console.error('Error fetching from Supabase:', e);
         throw e;
       }
     },
@@ -407,6 +442,36 @@ const Gallery = () => {
     if (!images) return [];
     return sortByCreatedAtDesc(images);
   }, [images]);
+
+  const themeOptions = useMemo(() => {
+    const base = filterOptionsData?.themes ?? [];
+    const fallback = displayImages
+      .map((image) => image.theme)
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map((value) => value.trim());
+    const current = activeFilters.theme && activeFilters.theme.trim().length > 0 ? [activeFilters.theme.trim()] : [];
+    return Array.from(new Set([...base, ...fallback, ...current])).sort((a, b) => a.localeCompare(b));
+  }, [filterOptionsData, displayImages, activeFilters.theme]);
+
+  const locationOptions = useMemo(() => {
+    const base = filterOptionsData?.locations ?? [];
+    const fallback = displayImages
+      .map((image) => image.country)
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map((value) => value.trim());
+    const current = activeFilters.location && activeFilters.location.trim().length > 0 ? [activeFilters.location.trim()] : [];
+    return Array.from(new Set([...base, ...fallback, ...current])).sort((a, b) => a.localeCompare(b));
+  }, [filterOptionsData, displayImages, activeFilters.location]);
+
+  const continentOptions = useMemo(() => {
+    const base = filterOptionsData?.continents ?? [];
+    const fallback = displayImages
+      .map((image) => image.continent)
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .map((value) => value.trim());
+    const current = activeFilters.continent && activeFilters.continent.trim().length > 0 ? [activeFilters.continent.trim()] : [];
+    return Array.from(new Set([...base, ...fallback, ...current])).sort((a, b) => a.localeCompare(b));
+  }, [filterOptionsData, displayImages, activeFilters.continent]);
 
   const canDownloadImages = displayImages.length > 0;
   const hasSelection = selectedIds.size > 0;
@@ -437,75 +502,45 @@ const Gallery = () => {
     return Math.max(1, Math.ceil(totalCountData / pageSize));
   }, [totalCountData, pageSize]);
 
-  const handleDownloadImagesCsv = async () => {
-    if (!canDownloadImages || downloadingCsv) return;
+  const handleDownloadSelectedEventsCsv = async () => {
+    if (!hasSelection || downloadingCsv) return;
 
-    const source = hasSelection
-      ? displayImages.filter((image) => selectedIds.has(image.id))
-      : displayImages;
-
-    if (source.length === 0) return;
-
-    const headerOrder = [
-      'id',
-      'title',
-      'description',
-      'prompt',
-      'country',
-      'year',
-      'model',
-      'created_at',
-      'width',
-      'height',
-      'cost',
-      'cfg_scale',
-      'steps',
-      'theme',
-      'approx_people_count',
-      'confidence',
-      'celebrity',
-      'real_event',
-      'has_full_hints',
-      'ready',
-      'aspect_ratio',
-      'desktop_size_kb',
-      'original_size_kb',
-      'output_format',
-    ];
-
-    const rows = source.map((image) => ({
-      id: image.id,
-      title: image.title ?? '',
-      description: image.description ?? '',
-      prompt: image.prompt,
-      country: image.country ?? '',
-      year: image.year ?? '',
-      model: image.model ?? '',
-      created_at: image.created_at,
-      width: image.width ?? '',
-      height: image.height ?? '',
-      cost: image.cost ?? '',
-      cfg_scale: image.cfg_scale ?? '',
-      steps: image.steps ?? '',
-      theme: image.theme ?? '',
-      approx_people_count: image.approx_people_count ?? '',
-      confidence: image.confidence ?? '',
-      celebrity: image.celebrity ?? '',
-      real_event: image.real_event ?? '',
-      has_full_hints: image.has_full_hints ?? '',
-      ready: image.ready ?? '',
-      aspect_ratio: image.aspect_ratio ?? '',
-      desktop_size_kb: image.desktop_size_kb ?? '',
-      original_size_kb: image.original_size_kb ?? '',
-      output_format: image.output_format ?? '',
-    }));
+    const ids = Array.from(selectedIds);
 
     try {
       setDownloadingCsv(true);
+
+      const { data, error } = await supabase
+        .from('images')
+        .select('*')
+        .in('id', ids);
+
+      if (error) {
+        throw error;
+      }
+
+      const rows = (data ?? []) as Record<string, unknown>[];
+
+      if (rows.length === 0) {
+        return;
+      }
+
+      const headerSet = new Set<string>();
+      for (const row of rows) {
+        Object.keys(row ?? {}).forEach((key) => headerSet.add(key));
+      }
+
+      const headerOrder = [
+        'id',
+        ...Array.from(headerSet)
+          .filter((key) => key !== 'id')
+          .sort((a, b) => a.localeCompare(b)),
+      ];
+
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      downloadCsv(`images-${timestamp}.csv`, rows, headerOrder);
+      downloadCsv(`events-${timestamp}.csv`, rows, headerOrder);
     } catch (err) {
-      console.error('Failed to download images CSV:', err);
+      console.error('Failed to download events CSV:', err);
     } finally {
       setDownloadingCsv(false);
     }
@@ -515,19 +550,64 @@ const Gallery = () => {
   const handleDeleteSelected = async () => {
     if (!hasSelection) return;
     if (!window.confirm(`Delete ${selectedIds.size} selected image(s)?`)) return;
+
     const ids = Array.from(selectedIds);
-    const { error } = await supabase
-      .from('images')
-      .delete()
-      .in('id', ids);
+    let promptIdsToDelete: string[] = [];
 
-    if (error) {
-      console.error('Delete error:', error);
-      return;
+    try {
+      const { data: relatedImageRows, error: relatedFetchError } = await supabase
+        .from('images')
+        .select('prompt_id')
+        .in('id', ids);
+
+      if (relatedFetchError) {
+        console.error('Failed to fetch related prompts for selected images:', relatedFetchError);
+      } else {
+        const uniquePromptIds = new Set(
+          (relatedImageRows ?? [])
+            .map((row) => (typeof row.prompt_id === 'string' ? row.prompt_id.trim() : ''))
+            .filter((value): value is string => Boolean(value?.length))
+        );
+
+        if (uniquePromptIds.size > 0) {
+          const confirmCascade = window.confirm(
+            `Also delete ${uniquePromptIds.size} related prompt${uniquePromptIds.size > 1 ? 's' : ''}? This cannot be undone.`
+          );
+
+          if (confirmCascade) {
+            promptIdsToDelete = Array.from(uniquePromptIds);
+          }
+        }
+      }
+
+      const { error } = await supabase
+        .from('images')
+        .delete()
+        .in('id', ids);
+
+      if (error) {
+        console.error('Delete error:', error);
+        return;
+      }
+
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ['images'] });
+
+      if (promptIdsToDelete.length > 0) {
+        const { error: promptDeleteError } = await supabase
+          .from('prompts')
+          .delete()
+          .in('id', promptIdsToDelete);
+
+        if (promptDeleteError) {
+          console.error('Failed to delete related prompts:', promptDeleteError);
+        } else {
+          queryClient.invalidateQueries({ queryKey: ['prompts'] });
+        }
+      }
+    } catch (err) {
+      console.error('Unexpected error during image deletion:', err);
     }
-
-    setSelectedIds(new Set());
-    queryClient.invalidateQueries({ queryKey: ['images'] });
   };
 
   const handleToggleReady = async () => {
@@ -602,10 +682,11 @@ const Gallery = () => {
             <div className="space-y-6 sticky top-6">
               <FiltersPanel
                 state={filters}
-                onChange={setFilters}
+                onApply={setFilters}
                 onClear={() => setFilters({})}
-                themeOptions={[...(images?.map(i => i.theme).filter(Boolean) as string[]).filter((v, i, a) => a.indexOf(v) === i)]}
-                locationOptions={[...(images?.map(i => i.country).filter(Boolean) as string[]).filter((v, i, a) => a.indexOf(v) === i)]}
+                themeOptions={themeOptions}
+                locationOptions={locationOptions}
+                continentOptions={continentOptions}
                 yearBounds={yearBoundsData}
               />
             </div>
@@ -671,8 +752,13 @@ const Gallery = () => {
                 <Button variant="secondary" size="sm" onClick={selectAllFiltered} disabled={!canDownloadImages}>Select All</Button>
                 <Button variant="secondary" size="sm" onClick={clearSelection} disabled={!hasSelection}>Clear</Button>
                 <Button variant="outline" size="sm" onClick={handleToggleReady} disabled={!hasSelection}>Toggle Ready</Button>
-                <Button variant="outline" size="sm" onClick={handleDownloadImagesCsv} disabled={!canDownloadImages || downloadingCsv}>
-                  {downloadingCsv ? 'Preparing CSV…' : 'Download CSV'}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDownloadSelectedEventsCsv}
+                  disabled={!hasSelection || downloadingCsv}
+                >
+                  {downloadingCsv ? 'Preparing CSV…' : 'Download Selected CSV'}
                 </Button>
                 <Button variant="destructive" size="sm" onClick={handleDeleteSelected} disabled={!hasSelection}>
                   Delete Selected ({selectedIds.size})

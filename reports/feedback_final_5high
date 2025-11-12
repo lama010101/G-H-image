@@ -1,0 +1,295 @@
+# Image Generator v2 — Final Consolidated Feedback (5-High)
+
+Sources merged: reports/feedback_gemini.md, reports/feedback_gpt5codex.md, reports/feedback_gpt5high, reports/feedback_sonnet4.5.md
+
+## Executive Summary
+The app has a strong foundation (React + Vite + TS, TanStack Query, Supabase) with rich prompt/gallery workflows. To be production-ready, focus on five high-impact areas: security of data access and secrets, modularizing monolithic pages, consistent error handling and logging, performance of lists and image pipeline, and TypeScript strictness/testing. This document consolidates all findings and prescribes an actionable roadmap.
+
+## Top 5 High‑Impact Priorities
+1. Security and configuration hygiene
+2. Page modularization and shared state/components
+3. Error boundary, logging, and consistent user feedback
+4. Data/query efficiency and list performance (virtualization, selective columns, indexes)
+5. TypeScript strictness and testing baseline (Vitest + Playwright)
+
+---
+
+## Comprehensive Findings (Consolidated)
+
+### Security & Compliance
+- Supabase URL/key committed in source; inconsistent use of env validation in settings.ts.
+- RLS overly permissive: public INSERT/UPDATE/DELETE on prompts/images; direct client writes with anon key.
+- Destructive actions rely on window.confirm; no audit logging/role checks.
+
+### Architecture & Code Quality
+- Monolithic pages: Prompts.tsx (~900 lines) and Gallery.tsx (>1k) interleave data logic, UI, and side effects.
+- Significant duplication between Prompts and Gallery (filters, pagination, selection, bulk actions).
+- Shared filter state via localStorage can cause race conditions/cross-tab churn.
+- Outdated/dead artifacts: obsolete Tasks route, backup/bak files, mixed package managers.
+
+### Data & API Layer
+- Broad select clauses and relational joins fetching more than rendered; client-side resorting post-ordered fetches.
+- Bulk generation loops sequential, lacking throttling/abort/retry.
+- Multiple storage backends (Firebase + inline base64 + provider URLs); Supabase Storage not leveraged.
+
+### Type Safety, Error Handling, Logging
+- TS config permissive (noImplicitAny=false, strictNullChecks=false, etc.).
+- 60+ console statements; inconsistent error handling and user messaging; no global error boundary.
+
+### Performance & UX
+- Large lists render in full; missing virtualization, lazy image loading, skeletons.
+- Gallery/Prompts filter on many columns without targeted DB indexes.
+- Main-thread canvas conversions block UI; heavy synchronous uploads; pipeline doesn’t flip ready=true reliably.
+- Filters panel dense; mobile/keyboard accessibility limited.
+
+### Documentation & DevEx
+- Docs vs code drift (Next.js mentions; dev port mismatch). No .env.example. Testing not configured. Console logging verbose; no adjustable levels.
+
+---
+
+## Consolidated Recommendations
+
+### Security & Configuration
+- Move Supabase URL/key and other credentials to env. Validate at runtime via settings.ts; add .env.example; rotate exposed keys.
+- Enable and enforce RLS on images/prompts; choose a write strategy:
+  - Option A (demo/safer): Anonymous reads only; route writes via Edge Function with service role.
+  - Option B (full auth): Supabase Auth; ownership policies per user.
+- Replace window.confirm with reusable confirmation dialogs that capture intent; add basic audit logging.
+
+### Architecture & State Management
+- Split Prompts/Gallery into subcomponents (grid/list/cards, filters, bulk actions, pagination, dialogs).
+- Extract shared hooks and components for filters, pagination, selection, and toolbars.
+- Migrate cross-page UI state to a predictable store (e.g., Zustand slices); keep server state in React Query.
+
+### Data & API Layer
+- Create Supabase data services with selective columns, typed responses, and pagination helpers; remove redundant client-side sorting when DB is ordered.
+- Batch expensive operations; add throttling, AbortController support, and limited retries with backoff for generation.
+- Consolidate storage strategy; prefer single backend (e.g., Supabase Storage or keep Firebase but remove inline base64). Store URLs in DB, not blobs.
+
+### Type Safety, Error Handling, Logging
+- Enable TS strict mode and related safeguards; fix resulting type errors incrementally.
+- Implement ErrorBoundary wrapper and a centralized logger with levels; remove raw console.* in production code.
+- Standardize API result types and user-friendly error toasts.
+
+### Performance & UX
+- Add TanStack Virtual (or equivalent) for prompt/image grids; add skeleton loaders and lazy loading.
+- Introduce targeted DB indexes for frequent filters/sorts (created_at, theme, country, continent, year, cost, real_event, approx_people_count, confidence, optimized_url IS NOT NULL).
+- Offload image conversions to a Web Worker (OffscreenCanvas when available). Fix pipeline to reliably set ready=true after uploads/variants.
+- Redesign FiltersPanel into collapsible sections; improve mobile discoverability and keyboard navigation.
+
+### Documentation & DevEx
+- Align docs to Vite + React Router and real routing; unify dev port setting.
+- Clean package managers; standardize on pnpm (as pinned); remove unused dependencies (e.g., next).
+- Add Vitest + Testing Library and Playwright smoke tests; add CI with lint/build/test.
+
+---
+
+## Improvement Roadmap (Phased)
+
+### Immediate (0–2 weeks)
+- Secure secrets: move Supabase keys to env; add .env.example; runtime validation; rotate if exposed.
+- Lock down data access: enable RLS; adopt Option A (anonymous read-only; route writes via Edge Function) or begin Option B (Auth) groundwork.
+- Stabilize errors and confirmations: add ErrorBoundary + logger; replace window.confirm with shared confirmation dialog.
+- Repo hygiene: remove unused next, clean non-pnpm lockfiles, unify dev port setting with README; update routing/docs; remove obsolete Tasks route.
+- Quick UX wins: skeleton loaders for lists; basic lazy loading of images; consistent toasts.
+
+### Near Term (2–6 weeks)
+- Modularize Prompts/Gallery into subcomponents; extract shared hooks (filters, selection, pagination) and shared UI primitives.
+- Data service layer: selective columns, typed helpers, pagination utilities, request de-dupe.
+- Performance: introduce virtualization, add DB indexes, remove client re-sorting when DB returns ordered results.
+- Pipeline fixes: set ready=true after successful uploads/variants; add abort/retry; throttle bulk generation.
+- Testing baseline: Vitest + Testing Library; Playwright smoke tests for prompt→generate→gallery flow.
+- Accessibility: improve FiltersPanel keyboard/focus behavior; mobile-friendly drawer/sheet variant.
+
+### Long Term (6+ weeks)
+- Asynchronous generation pipeline: background jobs (Supabase Edge Functions) for conversions/uploads/variants.
+- Advanced observability: metrics (generation time, Supabase latency), structured logs, alerting.
+- Storage consolidation finalized; remove inline binary column once migration completes.
+- Feature growth: saved prompt templates, team/multi-tenancy, cost dashboards.
+
+---
+
+## Atomic Tasks Backlog
+
+### Immediate (0–2 weeks)
+- **Security & env**
+  - Migrate Supabase client to env-based configuration in `src/integrations/supabase/client.ts` using `src/lib/settings.ts` runtime validation.
+  - Create `.env.example` mirroring keys validated by `src/lib/settings.ts`; ensure `.env.local` stays gitignored; rotate any keys previously committed.
+  - Update deploy secrets to match local env; verify app boot fails fast when keys are missing.
+- **RLS & policies**
+  - Add a migration `supabase/migrations/<timestamp>-lockdown-rls.sql` applying the “One‑shot SQL” in this document (enable RLS, drop permissive policies, add read policies, revoke writes for anon/authenticated if choosing Path A).
+  - Run migration locally and in your Supabase project; validate reads work and writes are blocked from the browser.
+- **Confirm dialogs**
+  - Create `src/components/ui/ConfirmDialog.tsx` (Radix/shadcn) as a reusable confirmation modal.
+  - Replace `window.confirm` usages in `src/pages/Prompts.tsx` destructive flows with `ConfirmDialog`.
+  - Replace `window.confirm` usages in `src/pages/Gallery.tsx` destructive flows with `ConfirmDialog`.
+- **Error boundary & logging**
+  - Add `src/components/ErrorBoundary.tsx` and wrap the app in `ErrorBoundary` within `src/App.tsx`.
+  - Add `src/lib/logger.ts` (leveled logger) and replace `console.*` in `src/services/imageGeneration.ts`, `src/pages/Prompts.tsx`, and `src/pages/Gallery.tsx`.
+- **Docs, dev port, repo hygiene**
+  - Align `vite.config.ts` dev server port with docs (prefer default 5173 or update README if keeping 8080).
+  - Update `README.md` and `ARCHITECTURE_AND_GUIDELINES.md` to reflect Vite + React Router and actual routes.
+  - Remove unused `next` dependency; delete `package-lock.json` and `bun.lockb` from VCS (standardize on pnpm).
+- **UX quick wins**
+  - Add `src/components/skeletons/PromptSkeleton.tsx` and `src/components/skeletons/ImageSkeleton.tsx`.
+  - Render skeletons during loading in `src/pages/Prompts.tsx` and `src/pages/Gallery.tsx`.
+  - Enable `loading="lazy"` and add basic IntersectionObserver-based lazy loading for gallery images.
+
+### Near Term (2–6 weeks)
+- **Modularize Prompts**
+  - Create `src/pages/Prompts/` with `index.tsx`, `PromptCard.tsx`, `PromptGrid.tsx`, `PromptBulkActions.tsx`, `PromptPagination.tsx`.
+  - Extract logic from `src/pages/Prompts.tsx` into the new components.
+  - Create hooks in `src/pages/Prompts/hooks/`: `usePromptFilters.ts`, `usePromptSelection.ts`, `usePromptGeneration.ts`.
+- **Modularize Gallery**
+  - Create `src/pages/Gallery/` with `index.tsx`, `ImageCard.tsx`, `ImageGrid.tsx`, `GalleryBulkActions.tsx`, `GalleryPagination.tsx`.
+  - Extract logic from `src/pages/Gallery.tsx` into the new components.
+- **Shared hooks & UI**
+  - Add `src/hooks/usePagination.ts` and `src/hooks/useListVirtualizer.ts` (TanStack Virtual integration).
+  - Create `src/components/common/FiltersPanel/` with collapsible sections used by Prompts and Gallery.
+- **Data services**
+  - Implement `src/services/data/promptsService.ts` with typed, selective column queries and pagination helpers.
+  - Implement `src/services/data/imagesService.ts` similarly; remove client-side resorting when DB returns ordered results.
+- **Performance & DB**
+  - Add a migration `supabase/migrations/<timestamp>-add-indexes.sql` with the CREATE INDEX statements listed in this doc.
+  - Integrate virtualization in Prompts and Gallery grids; verify smooth scroll with large lists.
+- **Pipeline correctness & resilience**
+  - In `src/services/imageGeneration.ts`, set `ready = true` only after uploads/variant creation complete successfully.
+  - In `src/services/reveImageSaver.ts`, persist only object storage URLs (no inline base64 in DB).
+  - Add `AbortController` support and limited retries with backoff to generation flows; throttle bulk operations.
+- **Testing baseline**
+  - Add Vitest + Testing Library; update `package.json` with `test` and `test:ui` scripts.
+  - Create unit tests for `imageGeneration` and data services; add component tests for `PromptCard`/`ImageCard`.
+  - Add Playwright config and a smoke test covering prompt → generate → gallery display.
+- **Accessibility & mobile**
+  - Ensure `FiltersPanel` has proper keyboard/focus handling.
+  - Add a mobile drawer/sheet variant for filters without changing desktop layout.
+
+### Long Term (6+ weeks)
+- **Edge functions & background jobs**
+  - Implement Supabase Edge Function(s) to handle conversions/uploads/variants; route writes through functions when RLS is strict.
+- **Observability**
+  - Integrate Sentry and structured logging; emit metrics for generation time and Supabase latency.
+- **Storage consolidation & cleanup**
+  - Migrate inline `binary` column data to object storage; after verification, drop the column via migration.
+- **Feature enhancements**
+  - Saved prompt templates; team multi-tenancy; cost tracking dashboard.
+
+---
+
+## One‑shot SQL: Production Hardening and Indexing
+```sql
+-- 1) Enable RLS on key tables
+ALTER TABLE public.images ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.prompts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.project_tasks ENABLE ROW LEVEL SECURITY;
+
+-- 2) Drop permissive public mutation policies if they exist
+DO $$
+BEGIN
+  PERFORM 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'images' AND policyname = 'Allow public insert access to images';
+  IF FOUND THEN EXECUTE 'DROP POLICY "Allow public insert access to images" ON public.images'; END IF;
+  PERFORM 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'images' AND policyname = 'Allow public update access to images';
+  IF FOUND THEN EXECUTE 'DROP POLICY "Allow public update access to images" ON public.images'; END IF;
+  PERFORM 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'images' AND policyname = 'Allow public delete access to images';
+  IF FOUND THEN EXECUTE 'DROP POLICY "Allow public delete access to images" ON public.images'; END IF;
+
+  PERFORM 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'prompts' AND policyname = 'Allow public insert access to prompts';
+  IF FOUND THEN EXECUTE 'DROP POLICY "Allow public insert access to prompts" ON public.prompts'; END IF;
+  PERFORM 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'prompts' AND policyname = 'Allow public update access to prompts';
+  IF FOUND THEN EXECUTE 'DROP POLICY "Allow public update access to prompts" ON public.prompts'; END IF;
+  PERFORM 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = 'prompts' AND policyname = 'Allow public delete access to prompts';
+  IF FOUND THEN EXECUTE 'DROP POLICY "Allow public delete access to prompts" ON public.prompts'; END IF;
+END $$;
+
+-- 3) Read policies (public can read)
+CREATE POLICY IF NOT EXISTS "public_read_images" ON public.images FOR SELECT USING (true);
+CREATE POLICY IF NOT EXISTS "public_read_prompts" ON public.prompts FOR SELECT USING (true);
+CREATE POLICY IF NOT EXISTS "public_read_project_tasks" ON public.project_tasks FOR SELECT USING (true);
+
+-- 4) Mutation policies (choose one path)
+-- Path A: lock down to service role only (Edge Functions). No client-side writes.
+REVOKE INSERT, UPDATE, DELETE ON public.images FROM anon, authenticated;
+REVOKE INSERT, UPDATE, DELETE ON public.prompts FROM anon, authenticated;
+
+-- If you need temporary authenticated writes (Path B), replace the REVOKEs above with ownership policies like:
+-- CREATE POLICY IF NOT EXISTS "user_insert_images" ON public.images FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+-- CREATE POLICY IF NOT EXISTS "user_update_own_images" ON public.images FOR UPDATE USING (user_id = auth.uid());
+-- CREATE POLICY IF NOT EXISTS "user_insert_prompts" ON public.prompts FOR INSERT WITH CHECK (auth.role() = 'authenticated');
+-- CREATE POLICY IF NOT EXISTS "user_update_own_prompts" ON public.prompts FOR UPDATE USING (user_id = auth.uid());
+
+-- 5) Performance indexes (match frequent filters/sorts)
+CREATE INDEX IF NOT EXISTS idx_images_created_at ON public.images (created_at);
+CREATE INDEX IF NOT EXISTS idx_images_theme ON public.images (theme);
+CREATE INDEX IF NOT EXISTS idx_images_country ON public.images (country);
+CREATE INDEX IF NOT EXISTS idx_images_continent ON public.images ("1_where_continent");
+CREATE INDEX IF NOT EXISTS idx_images_year ON public.images (year);
+CREATE INDEX IF NOT EXISTS idx_images_cost ON public.images (cost);
+CREATE INDEX IF NOT EXISTS idx_images_real_event ON public.images (real_event);
+CREATE INDEX IF NOT EXISTS idx_images_people_count ON public.images (approx_people_count);
+CREATE INDEX IF NOT EXISTS idx_images_confidence ON public.images (confidence);
+CREATE INDEX IF NOT EXISTS idx_images_optimized_url_not_null ON public.images ((optimized_image_url IS NOT NULL));
+
+-- 6) Optional: future cleanup for inline binary (after migrating all images to object storage)
+-- ALTER TABLE public.images DROP COLUMN IF EXISTS binary;
+```
+
+---
+
+## DevOps One‑shot Setup and Cleanup (PowerShell)
+```powershell
+# DevOps one-shot setup and cleanup for IMAGE-GENERATOR-V2
+# 1) Ensure pnpm v10 is installed (skip if already present)
+#    npm i -g pnpm@10.0.0
+
+# 2) Move to repo root and clean non-pnpm lockfiles
+Remove-Item -ErrorAction SilentlyContinue -Force -Path "package-lock.json","bun.lockb"
+
+# 3) Install deps with pnpm
+pnpm install
+
+# 4) (Optional) Remove unused dependency 'next' to avoid confusion
+pnpm remove next
+
+# 5) Add testing stack
+pnpm add -D vitest @vitest/ui @vitest/coverage-v8 jsdom @testing-library/react @testing-library/user-event @testing-library/jest-dom
+
+# 6) Add scripts (manually in package.json) and run tests once ready
+#    "test": "vitest --run",
+#    "test:ui": "vitest --ui"
+
+# 7) Start dev server (port depends on vite.config.ts)
+pnpm dev
+```
+
+---
+
+## Quick Wins
+- Replace window.confirm with shared confirmation dialog for destructive actions.
+- Remove obsolete routes/dependencies and backup config files.
+- Add skeleton cards during prompt/gallery fetch to smooth perceived performance.
+- Add ESLint rule or logger wrapper to curb production console noise.
+- Document mobile filter usage; consider a sheet/drawer variant for small screens.
+
+## Success Metrics / KPIs
+- Bundle size <1.5 MB; Lighthouse scores ≥90.
+- Test coverage ≥70%; TypeScript strict mode with zero errors.
+- <3s initial load; <200ms median API response.
+- Zero console errors in production; reliable ready=true state after generation.
+
+## Acceptance Criteria for “Improved” State
+- Anonymous users cannot mutate tables; reads still work.
+- Dev server/documentation mismatch resolved; repository standardized on pnpm.
+- Tests run with Vitest; Playwright smoke test passes for prompt→generate→gallery.
+- Image generation marks ready=true upon completion; Gallery reflects that.
+- No inline base64 blobs written to DB; images stored in object storage with URLs only.
+
+## Appendix: Evidence References (non-exhaustive)
+- Routing: src/App.tsx
+- Vite config: vite.config.ts
+- Prompts: src/pages/Prompts.tsx
+- Gallery: src/pages/Gallery.tsx
+- REVE flow: src/pages/ReveGenerator.tsx, src/services/reveClient.ts, src/services/reveImageSaver.ts
+- Generation core: src/services/imageGeneration.ts, src/services/runwareService.ts, src/services/imageFormatService.ts
+- Supabase client: src/integrations/supabase/client.ts
+- Migrations/RLS: supabase/ migrations, supabase-setup.sql
+- Settings: src/lib/settings.ts
