@@ -25,7 +25,7 @@ interface PromptData {
   confidence: number | null;
   theme: string | null;
   manually_used: boolean | null;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 interface PromptDetailsDialogProps {
@@ -47,19 +47,22 @@ export const PromptDetailsDialog: React.FC<PromptDetailsDialogProps> = ({ trigge
   }, [prompt]);
 
   const handleSave = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      toast({
+        title: "Sign in required",
+        description: "You must be signed in to edit prompts.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsSaving(true);
     try {
-      // Try to get user (optional; updates allowed publicly via RLS)
-      let userId: string | null = null;
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        userId = user?.id ?? null;
-      } catch (e) {
-        console.warn('Auth check failed (continuing due to public policies):', e);
-      }
+      const userId = user.id;
 
       // Build update object with proper data type handling
-      const updateData: any = {};
+      const updateData: Record<string, unknown> = {};
       
       // Handle string fields
       if (editedPrompt.title !== undefined && editedPrompt.title !== null) {
@@ -128,7 +131,6 @@ export const PromptDetailsDialog: React.FC<PromptDetailsDialogProps> = ({ trigge
           details: error.details,
           hint: error.hint,
           code: error.code,
-          statusCode: error.statusCode
         });
         
         // Handle specific RLS errors
@@ -175,7 +177,7 @@ export const PromptDetailsDialog: React.FC<PromptDetailsDialogProps> = ({ trigge
     setIsEditing(false);
   };
 
-  const handleChange = (field: string, value: any) => {
+  const handleChange = (field: string, value: string | number | boolean | null) => {
     setEditedPrompt(prev => ({ ...prev, [field]: value }));
   };
 

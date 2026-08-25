@@ -1,6 +1,14 @@
 
 // This file is now obsolete and can be deleted.
 import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableHeader,
+  TableBody,
+  TableHead,
+  TableRow,
+  TableCell,
+} from "@/components/ui/table";
 import { Loader2, CheckCircle, XCircle } from "lucide-react";
 import { useProjectTasks, ProjectTask } from "@/hooks/useProjectTasks";
 
@@ -29,8 +37,7 @@ const Tasks = () => {
   const taskList: ProjectTask[] = tasks && tasks.length ? tasks : fallbackTasks;
 
   const envChecks = [
-    { key: "VITE_RUNWARE_API_KEY", label: "Runware API" },
-    { key: "NEXT_PUBLIC_SUPABASE_ANON_KEY", label: "Supabase Anon" },
+    { key: "VITE_SUPABASE_ANON_KEY", label: "Supabase Anon" },
     { key: "SUPABASE_URL", label: "Supabase URL" },
   ];
 

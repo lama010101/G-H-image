@@ -13,6 +13,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { CalendarDays, MapPin, Eye, Zap, Loader2, FileImage, Maximize2, LayoutGrid, List, Search } from "lucide-react";
 import { useSharedPromptGalleryState } from "@/hooks/useSharedPromptGalleryState";
 
+interface ImageAccuracyScore {
+  source?: string;
+  request_id?: string | null;
+  credits_used?: number | null;
+  credits_remaining?: number | null;
+}
+
 interface Image {
   id: string;
   title: string | null;
@@ -37,11 +44,11 @@ interface Image {
   approx_people_count: number | null;
   confidence: number | null;
   celebrity: boolean | null;
-  real_event: boolean | null;
+  real_event: string | null;
   has_full_hints: boolean | null;
   ready: boolean | null;
   aspect_ratio: string | null;
-  accuracy_score: Record<string, any> | null;
+  accuracy_score: ImageAccuracyScore | null;
   desktop_size_kb: number | null;
   original_size_kb: number | null;
   output_format: string | null;
@@ -162,6 +169,7 @@ const Gallery = () => {
   const [fullscreenImage, setFullscreenImage] = useState<Image | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- accepts differently-shaped Postgrest query builders from each call site; typing this precisely would require `any` in the constraint anyway.
   const applyFilters = useCallback((query: any, term?: string) => {
     let filteredQuery = query;
     if (activeFilters.theme) {
@@ -195,9 +203,9 @@ const Gallery = () => {
       filteredQuery = filteredQuery.eq('celebrity', true);
     }
     if (activeFilters.realEventStatus === 'true') {
-      filteredQuery = filteredQuery.eq('real_event', true);
+      filteredQuery = filteredQuery.eq('real_event', 'true');
     } else if (activeFilters.realEventStatus === 'fictional') {
-      filteredQuery = filteredQuery.eq('real_event', false);
+      filteredQuery = filteredQuery.eq('real_event', 'false');
     }
     if (activeFilters.hasFullHints) {
       filteredQuery = filteredQuery.eq('has_full_hints', true);
@@ -252,7 +260,7 @@ const Gallery = () => {
   const { data: filterOptionsData } = useQuery({
     queryKey: ['images-filter-options'],
     queryFn: async () => {
-      const normalize = (rows: any[] | null | undefined, key: string) =>
+      const normalize = (rows: Record<string, unknown>[] | null | undefined, key: string) =>
         (rows ?? [])
           .map((row) => row[key] as string | null)
           .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
@@ -337,15 +345,15 @@ const Gallery = () => {
 
       if (error) throw error;
 
-      const paidImages = (data ?? []).filter((row): row is { cost: number; model: string | null } =>
+      const paidImages = (data ?? []).filter((row: { cost: number | null; model: string | null }): row is { cost: number; model: string | null } =>
         typeof row.cost === 'number' && row.cost > 0
       );
 
-      const totalCredits = paidImages.reduce((sum, row) => {
+      const totalCredits = paidImages.reduce((sum: number, row: { cost: number; model: string | null }) => {
         return row.model?.startsWith('reve:') ? sum + row.cost : sum;
       }, 0);
 
-      const totalDollars = paidImages.reduce((sum, row) => {
+      const totalDollars = paidImages.reduce((sum: number, row: { cost: number; model: string | null }) => {
         return row.model?.startsWith('reve:') ? sum : sum + row.cost;
       }, 0);
 
@@ -359,76 +367,72 @@ const Gallery = () => {
   const { data: images, isLoading, error } = useQuery({
     queryKey: ['images', page, pageSize, activeFilters, searchTerm],
     queryFn: async () => {
-      try {
-        const primaryColumns = [
-          'id',
-          'title',
-          'description',
-          'optimized_image_url',
-          'country',
-          'year',
-          'model',
-          'created_at',
-          'prompt',
-          'width',
-          'height',
-          'cost',
-          'cfg_scale',
-          'steps',
-          'theme',
-          'approx_people_count',
-          'confidence',
-          'celebrity',
-          'real_event',
-          'has_full_hints',
-          'ready',
-          'aspect_ratio',
-          'desktop_size_kb',
-          'original_size_kb',
-          'output_format',
-          'continent:"1_where_continent"',
-        ].join(',');
-        const fallbackColumns = [
-          'id',
-          'title',
-          'description',
-          'optimized_image_url',
-          'created_at',
-          'ready',
-          'prompt',
-          'model',
-          'cost',
-          'output_format',
-          'continent:"1_where_continent"',
-        ].join(',');
+      const primaryColumns = [
+        'id',
+        'title',
+        'description',
+        'optimized_image_url',
+        'country',
+        'year',
+        'model',
+        'created_at',
+        'prompt',
+        'width',
+        'height',
+        'cost',
+        'cfg_scale',
+        'steps',
+        'theme',
+        'approx_people_count',
+        'confidence',
+        'celebrity',
+        'real_event',
+        'has_full_hints',
+        'ready',
+        'aspect_ratio',
+        'desktop_size_kb',
+        'original_size_kb',
+        'output_format',
+        'continent:"1_where_continent"',
+      ].join(',');
+      const fallbackColumns = [
+        'id',
+        'title',
+        'description',
+        'optimized_image_url',
+        'created_at',
+        'ready',
+        'prompt',
+        'model',
+        'cost',
+        'output_format',
+        'continent:"1_where_continent"',
+      ].join(',');
 
-        const rangeStart = page * pageSize;
-        const rangeEnd = (page + 1) * pageSize - 1;
+      const rangeStart = page * pageSize;
+      const rangeEnd = (page + 1) * pageSize - 1;
 
-        const buildQuery = (columns: string, withOrder: boolean) => {
-          let q = supabase.from('images').select(columns);
-          q = applyFilters(q, searchTerm);
-          if (withOrder) {
-            q = q.order('created_at', { ascending: false });
-          }
-          return q.range(rangeStart, rangeEnd).returns<Image[]>();
-        };
-
-        const { data, error } = await buildQuery(primaryColumns, true);
-        if (error) {
-          if ((error as { code?: string })?.code === '57014') {
-            const { data: fallbackData, error: fallbackError } = await buildQuery(fallbackColumns, false);
-            if (fallbackError) {
-              throw new Error('Failed to fetch images – Supabase unavailable');
-            }
-            return sortByCreatedAtDesc(fallbackData ?? []);
-          }
-          throw new Error('Failed to fetch images – Supabase unavailable');
+      const buildQuery = (columns: string, withOrder: boolean) => {
+        let q = supabase.from('images').select(columns);
+        q = applyFilters(q, searchTerm);
+        if (withOrder) {
+          q = q.order('created_at', { ascending: false });
         }
-        return sortByCreatedAtDesc(data ?? []);
-      } catch (e) {
-        throw e;
+        return q.range(rangeStart, rangeEnd).returns<Image[]>();
+      };
+
+      const { data, error } = await buildQuery(primaryColumns, true);
+      if (error) {
+        if ((error as { code?: string })?.code === '57014') {
+          const { data: fallbackData, error: fallbackError } = await buildQuery(fallbackColumns, false);
+          if (fallbackError) {
+            throw new Error('Failed to fetch images – Supabase unavailable');
+          }
+          return sortByCreatedAtDesc(fallbackData ?? []);
+        }
+        throw new Error('Failed to fetch images – Supabase unavailable');
       }
+      return sortByCreatedAtDesc(data ?? []);
     },
     staleTime: 30000, // 30 seconds
     retry: false, // Don't retry on failure

@@ -1,7 +1,7 @@
 import { supabase } from "@/integrations/supabase/client";
 import { generateImageRunware } from "@/services/runwareService";
 import { generateImage as generateReveImage } from "@/services/reveClient";
-import { settings } from "@/lib/settings";
+import type { Json } from "@/integrations/supabase/types";
 
 export interface GenerationRequest {
   /* Core prompt info */
@@ -88,6 +88,7 @@ interface AccuracyScore {
   request_id: string | null;
   credits_remaining: number | null;
   source: string;
+  [key: string]: Json | undefined;
 }
 
 interface ImageRecordPayload {
@@ -96,10 +97,10 @@ interface ImageRecordPayload {
   prompt_id: string;
   ready: boolean;
   ai_generated: boolean;
+  user_id: string;
   model?: string;
   title?: string;
   description?: string | null;
-  user_id?: string;
   cfg_scale?: number;
   steps?: number;
   accuracy_score?: AccuracyScore;
@@ -155,16 +156,26 @@ export const generateImage = async (request: GenerationRequest): Promise<Generat
 
     const imageId = crypto.randomUUID();
 
-    const commonColumns = new Set([
+    const commonColumns: Set<string> = new Set([
       "1_when_century","1_where_continent","2_when_event","2_when_event_years","2_where_landmark","2_where_landmark_km",
       "3_when_decade","3_where_region","4_when_event","4_when_event_years","4_where_landmark","4_where_landmark_km",
       "5_when_clues","5_where_clues","ai_generated","approx_people_count","celebrity","confidence","country",
       "date","description","gps_coordinates","key_elements","last_verified","latitude","location","longitude",
       "negative_prompt","prompt","real_event","source_citation","theme","title","user_id","year"
-    ] as const);
+    ]);
 
     const promptColumnsSubset: Record<string, unknown> = {};
     const promptRowRecord = promptRow as Record<string, unknown>;
+
+    // images.user_id is NOT NULL in the DB; fall back to the current
+    // signed-in user when the source prompt has no owner set.
+    const {
+      data: { user: currentUser },
+    } = await supabase.auth.getUser();
+    const resolvedUserId = (promptRowRecord.user_id as string | undefined) ?? currentUser?.id;
+    if (!resolvedUserId) {
+      throw new Error("Cannot create an image record without a signed-in user.");
+    }
 
     Object.keys(promptRowRecord).forEach((key) => {
       if (commonColumns.has(key)) {
@@ -182,7 +193,7 @@ export const generateImage = async (request: GenerationRequest): Promise<Generat
       ready: false,
       ai_generated: true,
       model: request.model || "runware",
-      user_id: promptRowRecord.user_id as string | undefined,
+      user_id: resolvedUserId,
       cfg_scale: request.cfgScale,
       steps: request.steps,
     };
@@ -202,7 +213,7 @@ export const generateImage = async (request: GenerationRequest): Promise<Generat
     if (insertError) {
       console.warn("Warning: Could not save to Supabase:", insertError);
     } else if (dbImageData) {
-      imageData = dbImageData as ImageRecordPayload;
+      imageData = dbImageData as unknown as ImageRecordPayload;
     }
 
     console.log("Created image record:", imageData.id);
@@ -221,10 +232,6 @@ export const generateImage = async (request: GenerationRequest): Promise<Generat
 
     if (modelSel.startsWith("fal-ai/")) {
       const { generateImageFal } = await import("@/services/falServiceQueue");
-
-      if (!settings.VITE_FAL_API_KEY) {
-        throw new Error("FAL API key is missing. Please set VITE_FAL_API_KEY in your environment.");
-      }
 
       const falRes = await generateImageFal({
         prompt: request.prompt,
@@ -287,10 +294,6 @@ export const generateImage = async (request: GenerationRequest): Promise<Generat
       imageData.cost = reveResponse.credits_used ?? imageData.cost;
       imageData.mature_content = reveResponse.content_violation ?? null;
     } else {
-      if (!settings.VITE_RUNWARE_API_KEY) {
-        throw new Error("Runware API key is missing. Please set VITE_RUNWARE_API_KEY in your environment.");
-      }
-
       const runwareRes = await generateImageRunware({
         prompt: request.prompt,
         negative_prompt: request.negative_prompt,

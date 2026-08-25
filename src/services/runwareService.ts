@@ -1,5 +1,4 @@
-import axios from "axios";
-import { settings } from "@/lib/settings";
+import { callProviderProxy } from "@/services/apiProxy";
 
 interface RunwareGenerateRequest {
   prompt: string;
@@ -106,22 +105,13 @@ const BFL_MODEL_CONFIGS: Record<string, BflModelConfig> = {
 };
 
 /**
- * Generate an image using Runware's Image Inference API.
- * Expects the API key to be provided in `VITE_RUNWARE_API_KEY`.
+ * Generate an image using Runware's Image Inference API via the server-side
+ * api-proxy Edge Function (the API key never reaches the browser).
  * For full API details see: https://runware.ai/docs/en/image-inference/api-reference
  */
 export const generateImageRunware = async (
   req: RunwareGenerateRequest
 ): Promise<RunwareGenerateResponse> => {
-  const apiKey = settings.VITE_RUNWARE_API_KEY;
-
-  if (!apiKey) {
-    return {
-      success: false,
-      error: "RUNWARE API key is missing."
-    };
-  }
-
   try {
     const sanitizeDimension = (value: number | undefined, fallback: number) => {
       if (typeof value === "number" && Number.isFinite(value) && value >= 64) {
@@ -255,19 +245,26 @@ export const generateImageRunware = async (
 
     const payload = [task];
 
-    const response = await axios.post(
-      "https://api.runware.ai/v1",
-      payload,
-      {
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
-        },
-        timeout: 30_000
-      }
-    );
+    const response = await callProviderProxy({
+      provider: "runware",
+      path: "/v1",
+      method: "POST",
+      body: payload,
+    });
 
-    const data = response.data as { data?: { imageURL: string; cost?: number }[]; cost?: number };
+    const data = (await response.json()) as {
+      data?: { imageURL: string; cost?: number }[];
+      cost?: number;
+      errors?: { message: string }[];
+      message?: string;
+    };
+
+    if (!response.ok) {
+      const detailedMessage =
+        data?.errors?.[0]?.message || data?.message || `Request failed with status code ${response.status}`;
+      return { success: false, error: detailedMessage };
+    }
+
     const imageURL = data?.data?.[0]?.imageURL;
     const cost = typeof data?.cost === "number"
       ? data.cost
@@ -284,19 +281,6 @@ export const generateImageRunware = async (
     };
   } catch (error) {
     console.error("Runware image generation failed", error);
-
-    if (axios.isAxiosError(error) && error.response) {
-      const responseData = error.response.data as any;
-      const detailedMessage =
-        responseData?.errors?.[0]?.message ||
-        responseData?.message ||
-        `Request failed with status code ${error.response.status}`;
-
-      return {
-        success: false,
-        error: detailedMessage
-      };
-    }
 
     return {
       success: false,

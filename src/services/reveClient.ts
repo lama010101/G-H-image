@@ -1,5 +1,6 @@
 import { GenerationPayload, GenerationResult } from '@/types/reve'
 import { getReveConfig } from '@/lib/settings'
+import { callProviderProxy } from '@/services/apiProxy'
 
 const HISTORY_ERROR = 'Reve API returned an unexpected payload without image data.'
 
@@ -19,23 +20,16 @@ const bufferToBase64 = (buffer: ArrayBuffer) => {
   return btoa(binary)
 }
 
-const normalizePath = (path: string) => (path.startsWith('/') ? path : `/${path}`)
-const trimTrailingSlash = (value: string) =>
-  value.endsWith('/') ? value.slice(0, Math.max(1, value.length - 1)) : value
-
 export async function generateImage(payload: GenerationPayload): Promise<GenerationResult> {
   const config = getReveConfig()
   if (!config) throw new Error('REVE configuration is incomplete.')
 
-  const endpoint = `${trimTrailingSlash(config.apiBase)}${normalizePath(config.endpointPath)}`
-  const response = await fetch(endpoint, {
+  const response = await callProviderProxy({
+    provider: 'reve',
+    path: config.endpointPath,
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      Accept: config.accept,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
+    body: payload,
+    headers: { Accept: config.accept },
   })
 
   if (!response.ok) {
@@ -43,7 +37,7 @@ export async function generateImage(payload: GenerationPayload): Promise<Generat
     const errorCode = response.headers.get('X-Reve-Error-Code') ?? 'UNKNOWN_ERROR'
 
     if (config.accept === 'application/json') {
-      const errorBody = await response.json().catch(() => null)
+      const errorBody = await response.json().catch((): null => null)
       if (errorBody?.message) message = errorBody.message
     }
 
