@@ -1,10 +1,13 @@
 
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { Image, List, CheckSquare, Activity } from "lucide-react";
+import { Image, List, CheckSquare, Activity, LogOut } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
+import { Button } from "@/components/ui/button";
 
 const Navigation = () => {
   const location = useLocation();
+  const { user, signOut } = useAuth();
 
   const navItems = [
     { path: "/reve", label: "REVE", icon: Activity },
@@ -20,12 +23,12 @@ const Navigation = () => {
             <Activity className="h-6 w-6 text-primary" />
             <span className="font-bold text-lg">Image Generator v2</span>
           </div>
-          
-          <div className="flex space-x-1">
+
+          <div className="flex items-center space-x-1">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = location.pathname === item.path;
-              
+
               return (
                 <Link
                   key={item.path}
@@ -42,6 +45,14 @@ const Navigation = () => {
                 </Link>
               );
             })}
+            {user && (
+              <div className="flex items-center space-x-2 pl-3 ml-2 border-l">
+                <span className="text-sm text-muted-foreground hidden sm:inline">{user.email}</span>
+                <Button variant="ghost" size="sm" onClick={signOut}>
+                  <LogOut className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       </div>

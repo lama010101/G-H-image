@@ -47,16 +47,19 @@ export const PromptDetailsDialog: React.FC<PromptDetailsDialogProps> = ({ trigge
   }, [prompt]);
 
   const handleSave = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      toast({
+        title: "Sign in required",
+        description: "You must be signed in to edit prompts.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsSaving(true);
     try {
-      // Try to get user (optional; updates allowed publicly via RLS)
-      let userId: string | null = null;
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        userId = user?.id ?? null;
-      } catch (e) {
-        console.warn('Auth check failed (continuing due to public policies):', e);
-      }
+      const userId = user.id;
 
       // Build update object with proper data type handling
       const updateData: any = {};
@@ -128,7 +131,6 @@ export const PromptDetailsDialog: React.FC<PromptDetailsDialogProps> = ({ trigge
           details: error.details,
           hint: error.hint,
           code: error.code,
-          statusCode: error.statusCode
         });
         
         // Handle specific RLS errors

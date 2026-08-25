@@ -16,7 +16,7 @@ const LS_KEY = 'historify_generation_queue_v2';
 
 /** Default concurrency (max simultaneous generations). */
 const DEFAULT_CONCURRENCY = Number(
-  import.meta.env.NEXT_PUBLIC_GEN_CONCURRENCY ?? 5,
+  import.meta.env.VITE_GEN_CONCURRENCY ?? 5,
 );
 
 interface QueueState {
@@ -43,7 +43,7 @@ interface QueueState {
 export const useQueueStore = create<QueueState>()(
   persist(
     (set, get) => ({
-      items: [],
+      items: [] as QueueItem[],
       concurrency: DEFAULT_CONCURRENCY,
       enqueue: (promptIds) => {
         const ids = Array.isArray(promptIds) ? promptIds : [promptIds];

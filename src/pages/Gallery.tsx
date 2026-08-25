@@ -337,15 +337,15 @@ const Gallery = () => {
 
       if (error) throw error;
 
-      const paidImages = (data ?? []).filter((row): row is { cost: number; model: string | null } =>
+      const paidImages = (data ?? []).filter((row: { cost: number | null; model: string | null }): row is { cost: number; model: string | null } =>
         typeof row.cost === 'number' && row.cost > 0
       );
 
-      const totalCredits = paidImages.reduce((sum, row) => {
+      const totalCredits = paidImages.reduce((sum: number, row: { cost: number; model: string | null }) => {
         return row.model?.startsWith('reve:') ? sum + row.cost : sum;
       }, 0);
 
-      const totalDollars = paidImages.reduce((sum, row) => {
+      const totalDollars = paidImages.reduce((sum: number, row: { cost: number; model: string | null }) => {
         return row.model?.startsWith('reve:') ? sum : sum + row.cost;
       }, 0);
 

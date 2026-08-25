@@ -1,5 +1,4 @@
-import axios from "axios";
-import { settings } from "@/lib/settings";
+import { callProviderProxy } from "@/services/apiProxy";
 
 export interface FalGenerateRequest {
   prompt: string;
@@ -29,44 +28,34 @@ export interface FalGenerateResponse {
 export const generateImageFal = async (
   req: FalGenerateRequest
 ): Promise<FalGenerateResponse> => {
-  const apiKey = settings.VITE_FAL_API_KEY;
-  if (!apiKey) {
-    return { success: false, error: "FAL API key is missing." };
-  }
-
   const modelPath = req.model ?? "fal-ai/imagen4/preview";
-  const endpoint = `https://queue.fal.run/${modelPath}`;
 
   try {
     // Submit generation request
-    const submitRes = await axios.post(
-      endpoint,
-      {
+    const submitRes = await callProviderProxy({
+      provider: "fal",
+      path: modelPath,
+      method: "POST",
+      body: {
         prompt: req.prompt,
         negative_prompt: req.negative_prompt ?? "",
         aspect_ratio: req.aspect_ratio ?? "1:1",
         ...(req.image_size ? { image_size: req.image_size } : {}),
         ...(req.output_format ? { output_format: req.output_format } : {}),
       },
-      {
-        headers: {
-          Authorization: `Key ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        timeout: 30_000,
-      }
-    );
+    });
+    const submitData = await submitRes.json();
+    if (!submitRes.ok) {
+      throw new Error(submitData?.error || `Fal.ai request failed (${submitRes.status})`);
+    }
 
-    let status: string = submitRes.data?.status ?? "IN_QUEUE";
-    let statusUrl: string | undefined = submitRes.data?.status_url;
-    let resultUrl: string | undefined = submitRes.data?.response_url;
+    let status: string = submitData?.status ?? "IN_QUEUE";
+    const statusUrl: string | undefined = submitData?.status_url;
+    let resultUrl: string | undefined = submitData?.response_url;
 
     const poll = async (url: string) => {
-      const res = await axios.get(url, {
-        headers: { Authorization: `Key ${apiKey}` },
-        timeout: 30_000,
-      });
-      return res.data;
+      const res = await callProviderProxy({ provider: "fal", path: url, method: "GET" });
+      return res.json();
     };
 
     const start = Date.now();
@@ -95,9 +84,9 @@ export const generateImageFal = async (
     }
 
     return { success: true, imageUrl };
-  } catch (err: any) {
+  } catch (err) {
     console.error("Fal.ai image generation failed", err);
-    return { success: false, error: err?.message || "Unknown error" };
+    return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
   }
 };
 

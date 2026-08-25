@@ -1,7 +1,6 @@
 import { supabase } from "@/integrations/supabase/client";
 import { generateImageRunware } from "@/services/runwareService";
 import { generateImage as generateReveImage } from "@/services/reveClient";
-import { settings } from "@/lib/settings";
 
 export interface GenerationRequest {
   /* Core prompt info */
@@ -222,10 +221,6 @@ export const generateImage = async (request: GenerationRequest): Promise<Generat
     if (modelSel.startsWith("fal-ai/")) {
       const { generateImageFal } = await import("@/services/falServiceQueue");
 
-      if (!settings.VITE_FAL_API_KEY) {
-        throw new Error("FAL API key is missing. Please set VITE_FAL_API_KEY in your environment.");
-      }
-
       const falRes = await generateImageFal({
         prompt: request.prompt,
         negative_prompt: request.negative_prompt,
@@ -287,10 +282,6 @@ export const generateImage = async (request: GenerationRequest): Promise<Generat
       imageData.cost = reveResponse.credits_used ?? imageData.cost;
       imageData.mature_content = reveResponse.content_violation ?? null;
     } else {
-      if (!settings.VITE_RUNWARE_API_KEY) {
-        throw new Error("Runware API key is missing. Please set VITE_RUNWARE_API_KEY in your environment.");
-      }
-
       const runwareRes = await generateImageRunware({
         prompt: request.prompt,
         negative_prompt: request.negative_prompt,
