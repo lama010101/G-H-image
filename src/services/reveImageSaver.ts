@@ -19,7 +19,7 @@ export interface ReveSaveResult {
   error?: string
 }
 
-const SOURCE_IMAGE_FORMAT: 'png' = 'png'
+const SOURCE_IMAGE_FORMAT = 'png' as const
 const DEFAULT_TARGET_FORMAT: 'png' | 'jpg' | 'webp' = 'webp'
 
 const mimeTypeForFormat = (format: 'png' | 'jpg' | 'webp') => {
@@ -127,7 +127,7 @@ export const saveReveImage = async (params: ReveSaveParams): Promise<ReveSaveRes
 
     const binaryData = originalDataUrl
 
-    const imageRecord: Record<string, any> = {
+    const imageRecord: Record<string, unknown> = {
       id: imageId,
       prompt,
       title: title?.trim() || `REVE image ${requestId || imageId}`,

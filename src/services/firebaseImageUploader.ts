@@ -216,7 +216,6 @@ export async function uploadAIImages(
       throw new DOMException("Batch upload cancelled", "AbortError");
     }
 
-    // eslint-disable-next-line no-await-in-loop
     const url = await uploadAIImage(files[i], {
       onStatus: (status) => onStatus?.(i, status),
       signal,

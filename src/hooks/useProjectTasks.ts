@@ -18,8 +18,7 @@ export const useProjectTasks = () => {
     queryKey: ["project_tasks"],
     queryFn: async () => {
       try {
-        // Using `any` to bypass TypeScript table-name constraint since `project_tasks` is not yet in the generated types
-        const { data, error } = await (supabase.from as any)("project_tasks").select("*");
+        const { data, error } = await supabase.from("project_tasks").select("*");
         if (error) {
           console.warn("project_tasks fetch error", error.message);
           // Return empty array on error - fallback tasks will be used

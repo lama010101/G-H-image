@@ -25,7 +25,7 @@ interface PromptData {
   confidence: number | null;
   theme: string | null;
   manually_used: boolean | null;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 interface PromptDetailsDialogProps {
@@ -62,7 +62,7 @@ export const PromptDetailsDialog: React.FC<PromptDetailsDialogProps> = ({ trigge
       const userId = user.id;
 
       // Build update object with proper data type handling
-      const updateData: any = {};
+      const updateData: Record<string, unknown> = {};
       
       // Handle string fields
       if (editedPrompt.title !== undefined && editedPrompt.title !== null) {
@@ -177,7 +177,7 @@ export const PromptDetailsDialog: React.FC<PromptDetailsDialogProps> = ({ trigge
     setIsEditing(false);
   };
 
-  const handleChange = (field: string, value: any) => {
+  const handleChange = (field: string, value: string | number | boolean | null) => {
     setEditedPrompt(prev => ({ ...prev, [field]: value }));
   };
 

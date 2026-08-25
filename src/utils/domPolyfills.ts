@@ -11,8 +11,8 @@
 //   2. Throw a clear error in non-browser environments to avoid silent failures.
 
 export async function createImageBitmap(blob: Blob): Promise<ImageBitmap> {
-  if (typeof window !== "undefined" && typeof (window as any).createImageBitmap === "function") {
-    return (window as any).createImageBitmap(blob);
+  if (typeof window !== "undefined" && typeof window.createImageBitmap === "function") {
+    return window.createImageBitmap(blob);
   }
 
   // Fallback for environments without createImageBitmap, such as JSDOM or Node.

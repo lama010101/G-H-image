@@ -32,10 +32,11 @@ interface Prompt {
   approx_people_count: number | null;
   confidence: number | null;
   theme: string | null;
-  real_event: boolean | null;
+  real_event: string | null;
   manually_used: boolean | null;
   continent?: string | null;
   images?: { id: string; cost: number | null }[]; // joined images to infer usage
+  [key: string]: unknown;
 }
 
 interface GenerationSettings {
@@ -158,7 +159,7 @@ const Prompts = () => {
   const { data: filterOptionsData } = useQuery({
     queryKey: ['prompts-filter-options'],
     queryFn: async () => {
-      const normalize = (rows: any[] | null | undefined, key: string) =>
+      const normalize = (rows: Record<string, unknown>[] | null | undefined, key: string) =>
         (rows ?? [])
           .map((row) => row[key] as string | null)
           .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
@@ -227,8 +228,8 @@ const Prompts = () => {
         query = query.gte('confidence', minC).lte('confidence', maxC);
       }
       if (filters.celebrityOnly) query = query.eq('celebrity', true);
-      if (filters.realEventStatus === 'true') query = query.eq('real_event', true);
-      else if (filters.realEventStatus === 'fictional') query = query.eq('real_event', false);
+      if (filters.realEventStatus === 'true') query = query.eq('real_event', 'true');
+      else if (filters.realEventStatus === 'fictional') query = query.eq('real_event', 'false');
       if (filters.hasFullHints) query = query.eq('has_full_hints', true);
       if (filters.usedStatus === 'unused') {
         query = query.filter('images.id', 'is', null);
@@ -284,8 +285,8 @@ const Prompts = () => {
         query = query.gte('confidence', minC).lte('confidence', maxC);
       }
       if (filters.celebrityOnly) query = query.eq('celebrity', true);
-      if (filters.realEventStatus === 'true') query = query.eq('real_event', true);
-      else if (filters.realEventStatus === 'fictional') query = query.eq('real_event', false);
+      if (filters.realEventStatus === 'true') query = query.eq('real_event', 'true');
+      else if (filters.realEventStatus === 'fictional') query = query.eq('real_event', 'false');
       if (filters.hasFullHints) query = query.eq('has_full_hints', true);
       if (filters.usedStatus === 'unused') {
         query = query.is('images', null);
@@ -518,7 +519,7 @@ const Prompts = () => {
     }
   };
 
-  const filteredPrompts = prompts || [];
+  const filteredPrompts = useMemo(() => prompts || [], [prompts]);
 
   const themeOptions = useMemo(() => {
     const base = filterOptionsData?.themes ?? [];
@@ -556,7 +557,7 @@ const Prompts = () => {
     try {
       const { data, error } = await supabase
         .from('prompts')
-        .update({ real_event: isRealEvent })
+        .update({ real_event: isRealEvent ? 'true' : 'false' })
         .eq('id', prompt.id)
         .select()
         .single();
@@ -572,8 +573,8 @@ const Prompts = () => {
       queryClient.setQueryData(
         ['prompts', page, pageSize, filters, searchTerm],
         (oldData: Prompt[] | undefined) => {
-          const newData = oldData?.map(p => 
-            p.id === prompt.id ? { ...p, real_event: isRealEvent } : p
+          const newData = oldData?.map(p =>
+            p.id === prompt.id ? { ...p, real_event: isRealEvent ? 'true' : 'false' } : p
           );
           console.log('Updated local state:', newData?.find(p => p.id === prompt.id));
           return newData;
@@ -845,16 +846,16 @@ const Prompts = () => {
                                 <div className="flex items-center space-x-2">
                                   <Switch
                                     id={`real-event-${prompt.id}`}
-                                    checked={!!prompt.real_event}
+                                    checked={prompt.real_event === 'true'}
                                     onCheckedChange={(checked) => toggleRealEvent(prompt, checked)}
                                     className="data-[state=checked]:bg-green-500"
                                   />
                                   <Label htmlFor={`real-event-${prompt.id}`} className="text-xs">
-                                    {prompt.real_event ? 'Real Event' : 'Not Real'}
+                                    {prompt.real_event === 'true' ? 'Real Event' : 'Not Real'}
                                   </Label>
                                 </div>
-                                <Badge variant={prompt.real_event ? 'success' : 'destructive'} className="shrink-0">
-                                  {prompt.real_event ? 'Real' : 'Fictional'}
+                                <Badge variant={prompt.real_event === 'true' ? 'success' : 'destructive'} className="shrink-0">
+                                  {prompt.real_event === 'true' ? 'Real' : 'Fictional'}
                                 </Badge>
                                 {typeof prompt.confidence === 'number' && (
                                   <Badge variant="outline" className="shrink-0">Confidence: {prompt.confidence}</Badge>
